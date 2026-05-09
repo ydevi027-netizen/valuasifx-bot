@@ -3,7 +3,8 @@
 ║   FX YIELD SPREAD BOT — TELEGRAM         ║
 ║   Group  : PETILASAN                     ║
 ║   Topic  : Valuasi (Thread ID: 7)        ║
-║   Pairs  : 32 pair FX                   ║
+║   Data   : yfinance (Yahoo Finance)      ║
+║   Pairs  : 31 pair FX                   ║
 ╚══════════════════════════════════════════╝
 """
 
@@ -13,8 +14,8 @@ import threading
 import logging
 import requests
 import schedule
+import yfinance as yf
 
-from bs4 import BeautifulSoup
 from datetime import datetime
 
 # ──────────────────────────────────────────
@@ -30,145 +31,194 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 log = logging.getLogger(__name__)
 
 # ──────────────────────────────────────────
-#  YIELD 2Y
+#  YIELD 2Y — Yahoo Finance symbols
 # ──────────────────────────────────────────
-YIELD_URLS = {
-    "US": "https://www.investing.com/rates-bonds/u.s.-2-year-bond-yield",
-    "EU": "https://www.investing.com/rates-bonds/germany-2-year-bond-yield",
-    "GB": "https://www.investing.com/rates-bonds/u.k.-2-year-bond-yield",
-    "JP": "https://www.investing.com/rates-bonds/japan-2-year-bond-yield",
-    "AU": "https://www.investing.com/rates-bonds/australia-2-year-bond-yield",
-    "NZ": "https://www.investing.com/rates-bonds/new-zealand-2-year-bond-yield",
-    "CA": "https://www.investing.com/rates-bonds/canada-2-year-bond-yield",
-    "CH": "https://www.investing.com/rates-bonds/switzerland-2-year-bond-yield",
-    "CN": "https://www.investing.com/rates-bonds/china-2-year-bond-yield",
+YIELD_SYMBOLS = {
+    "US": "^IRX",       # Proxy: US 13W, kita pakai TNX sebagai 2Y proxy
+    "US": "2YY=F",      # US 2Y futures
+    "EU": "DE2YT=RR",   # Germany 2Y
+    "GB": "GB2YT=RR",   # UK 2Y
+    "JP": "JP2YT=RR",   # Japan 2Y
+    "AU": "AU2YT=RR",   # Australia 2Y
+    "NZ": "NZ2YT=RR",   # New Zealand 2Y
+    "CA": "CA2YT=RR",   # Canada 2Y
+    "CH": "CH2YT=RR",   # Switzerland 2Y
+    "CN": "CN2YT=RR",   # China 2Y
 }
 
 # ──────────────────────────────────────────
-#  32 PAIR FX (tanpa duplikat)
-# pair, base_yield, quote_yield, slug_investing
+#  31 PAIR FX — Yahoo Finance symbols
+# pair, base_yield, quote_yield, yahoo_symbol
 # ──────────────────────────────────────────
 FX_PAIRS = [
     # Major USD
-    ("EURUSD", "EU", "US", "eur-usd"),
-    ("GBPUSD", "GB", "US", "gbp-usd"),
-    ("AUDUSD", "AU", "US", "aud-usd"),
-    ("NZDUSD", "NZ", "US", "nzd-usd"),
-    ("USDJPY", "US", "JP", "usd-jpy"),
-    ("USDCAD", "US", "CA", "usd-cad"),
-    ("USDCHF", "US", "CH", "usd-chf"),
-    ("USDCNH", "US", "CN", "usd-cnh"),
+    ("EURUSD", "EU", "US", "EURUSD=X"),
+    ("GBPUSD", "GB", "US", "GBPUSD=X"),
+    ("AUDUSD", "AU", "US", "AUDUSD=X"),
+    ("NZDUSD", "NZ", "US", "NZDUSD=X"),
+    ("USDJPY", "US", "JP", "USDJPY=X"),
+    ("USDCAD", "US", "CA", "USDCAD=X"),
+    ("USDCHF", "US", "CH", "USDCHF=X"),
+    ("USDCNH", "US", "CN", "USDCNH=X"),
     # EUR cross
-    ("EURGBP", "EU", "GB", "eur-gbp"),
-    ("EURJPY", "EU", "JP", "eur-jpy"),
-    ("EURCAD", "EU", "CA", "eur-cad"),
-    ("EURCHF", "EU", "CH", "eur-chf"),
-    ("EURNZD", "EU", "NZ", "eur-nzd"),
-    ("EURAUD", "EU", "AU", "eur-aud"),
+    ("EURGBP", "EU", "GB", "EURGBP=X"),
+    ("EURJPY", "EU", "JP", "EURJPY=X"),
+    ("EURCAD", "EU", "CA", "EURCAD=X"),
+    ("EURCHF", "EU", "CH", "EURCHF=X"),
+    ("EURNZD", "EU", "NZ", "EURNZD=X"),
+    ("EURAUD", "EU", "AU", "EURAUD=X"),
     # GBP cross
-    ("GBPJPY", "GB", "JP", "gbp-jpy"),
-    ("GBPCAD", "GB", "CA", "gbp-cad"),
-    ("GBPCHF", "GB", "CH", "gbp-chf"),
-    ("GBPNZD", "GB", "NZ", "gbp-nzd"),
-    ("GBPAUD", "GB", "AU", "gbp-aud"),
+    ("GBPJPY", "GB", "JP", "GBPJPY=X"),
+    ("GBPCAD", "GB", "CA", "GBPCAD=X"),
+    ("GBPCHF", "GB", "CH", "GBPCHF=X"),
+    ("GBPNZD", "GB", "NZ", "GBPNZD=X"),
+    ("GBPAUD", "GB", "AU", "GBPAUD=X"),
     # AUD cross
-    ("AUDJPY", "AU", "JP", "aud-jpy"),
-    ("AUDCAD", "AU", "CA", "aud-cad"),
-    ("AUDCHF", "AU", "CH", "aud-chf"),
-    ("AUDNZD", "AU", "NZ", "aud-nzd"),
-    ("AUDEUR", "AU", "EU", "aud-eur"),
-    ("AUDGBP", "AU", "GB", "aud-gbp"),
+    ("AUDJPY", "AU", "JP", "AUDJPY=X"),
+    ("AUDCAD", "AU", "CA", "AUDCAD=X"),
+    ("AUDCHF", "AU", "CH", "AUDCHF=X"),
+    ("AUDNZD", "AU", "NZ", "AUDNZD=X"),
+    ("AUDEUR", "AU", "EU", "AUDEUR=X"),
+    ("AUDGBP", "AU", "GB", "AUDGBP=X"),
     # NZD cross
-    ("NZDJPY", "NZ", "JP", "nzd-jpy"),
-    ("NZDCAD", "NZ", "CA", "nzd-cad"),
-    ("NZDCHF", "NZ", "CH", "nzd-chf"),
+    ("NZDJPY", "NZ", "JP", "NZDJPY=X"),
+    ("NZDCAD", "NZ", "CA", "NZDCAD=X"),
+    ("NZDCHF", "NZ", "CH", "NZDCHF=X"),
     # CAD cross
-    ("CADJPY", "CA", "JP", "cad-jpy"),
-    ("CADCHF", "CA", "CH", "cad-chf"),
-    ("GBPCAD", "GB", "CA", "gbp-cad"),
+    ("CADJPY", "CA", "JP", "CADJPY=X"),
+    ("CADCHF", "CA", "CH", "CADCHF=X"),
     # CHF cross
-    ("JPYCHF", "JP", "CH", "jpy-chf"),
+    ("JPYCHF", "JP", "CH", "JPYCHF=X"),
 ]
 
-# Hapus duplikat berdasarkan nama pair
-seen = set()
-FX_PAIRS_CLEAN = []
-for p in FX_PAIRS:
-    if p[0] not in seen:
-        seen.add(p[0])
-        FX_PAIRS_CLEAN.append(p)
-FX_PAIRS = FX_PAIRS_CLEAN
-
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Referer": "https://www.investing.com/",
-}
-
 # ──────────────────────────────────────────
-#  SCRAPING
+#  AMBIL DATA YIELD VIA YFINANCE
 # ──────────────────────────────────────────
-def _parse_price(soup):
-    for sel in ['[data-test="instrument-price-last"]', ".text-5xl", "#last_last"]:
-        tag = soup.select_one(sel)
-        if tag:
-            try:
-                return float(tag.get_text(strip=True).replace(",", ""))
-            except ValueError:
-                continue
-    return None
-
-def scrape_yield(country):
-    try:
-        r = requests.get(YIELD_URLS[country], headers=HEADERS, timeout=15)
-        return _parse_price(BeautifulSoup(r.text, "lxml"))
-    except Exception as e:
-        log.warning(f"Yield error [{country}]: {e}")
-        return None
-
-def scrape_fx(slug):
-    try:
-        r = requests.get(f"https://www.investing.com/currencies/{slug}", headers=HEADERS, timeout=15)
-        return _parse_price(BeautifulSoup(r.text, "lxml"))
-    except Exception as e:
-        log.warning(f"FX error [{slug}]: {e}")
-        return None
-
-def get_all_yields():
+def get_all_yields() -> dict:
+    log.info("Mengambil data yield via yfinance...")
     yields = {}
-    for code in YIELD_URLS:
-        yields[code] = scrape_yield(code)
-        log.info(f"  {code}: {yields[code]}")
-        time.sleep(2)
+
+    symbol_map = {
+        "US": "2YY=F",
+        "EU": "DE2YT=RR",
+        "GB": "GB2YT=RR",
+        "JP": "JP2YT=RR",
+        "AU": "AU2YT=RR",
+        "NZ": "NZ2YT=RR",
+        "CA": "CA2YT=RR",
+        "CH": "CH2YT=RR",
+        "CN": "CN2YT=RR",
+    }
+
+    for country, symbol in symbol_map.items():
+        try:
+            ticker = yf.Ticker(symbol)
+            hist = ticker.history(period="5d")
+            if not hist.empty:
+                val = float(hist["Close"].dropna().iloc[-1])
+                yields[country] = val
+                log.info(f"  {country} ({symbol}): {val:.4f}%")
+            else:
+                log.warning(f"  {country}: data kosong")
+                yields[country] = None
+        except Exception as e:
+            log.warning(f"  {country}: ERROR - {e}")
+            yields[country] = None
+        time.sleep(0.5)
+
     return yields
 
-def calculate(yields):
+
+# ──────────────────────────────────────────
+#  AMBIL HARGA FX VIA YFINANCE (batch)
+# ──────────────────────────────────────────
+def get_all_fx_prices() -> dict:
+    log.info("Mengambil harga FX via yfinance (batch)...")
+    symbols = [sym for _, _, _, sym in FX_PAIRS]
+    prices  = {}
+
+    try:
+        # Download semua sekaligus — lebih cepat
+        data = yf.download(
+            tickers=symbols,
+            period="1d",
+            interval="1h",
+            group_by="ticker",
+            auto_adjust=True,
+            progress=False,
+            threads=True,
+        )
+
+        for sym in symbols:
+            try:
+                if len(symbols) == 1:
+                    close = data["Close"].dropna()
+                else:
+                    close = data[sym]["Close"].dropna()
+
+                if not close.empty:
+                    prices[sym] = float(close.iloc[-1])
+                    log.info(f"  {sym}: {prices[sym]}")
+                else:
+                    prices[sym] = None
+            except Exception as e:
+                log.warning(f"  {sym}: ERROR parse - {e}")
+                prices[sym] = None
+
+    except Exception as e:
+        log.error(f"Batch download error: {e}")
+        # Fallback: satu per satu
+        for sym in symbols:
+            try:
+                t = yf.Ticker(sym)
+                hist = t.history(period="2d", interval="1h")
+                if not hist.empty:
+                    prices[sym] = float(hist["Close"].dropna().iloc[-1])
+                else:
+                    prices[sym] = None
+            except Exception as e2:
+                log.warning(f"  {sym} fallback error: {e2}")
+                prices[sym] = None
+            time.sleep(0.3)
+
+    return prices
+
+
+# ──────────────────────────────────────────
+#  KALKULASI VALUASI
+# ──────────────────────────────────────────
+def calculate(yields: dict, fx_prices: dict) -> list:
     results = []
-    for pair, base, quote, slug in FX_PAIRS:
+    for pair, base, quote, symbol in FX_PAIRS:
         yb = yields.get(base)
         yq = yields.get(quote)
-        if yb is None or yq is None:
+        fx = fx_prices.get(symbol)
+
+        if yb is None or yq is None or fx is None:
+            log.warning(f"Skip {pair}: data tidak lengkap")
             continue
-        spread = yb - yq
-        fx = scrape_fx(slug)
-        time.sleep(1.5)
-        if fx is None:
-            continue
-        fair = fx / (1 + spread / 100)
+
+        spread   = yb - yq
+        fair     = fx / (1 + spread / 100)
         diff_pct = ((fx - fair) / fair) * 100
+
         if diff_pct > 0.5:
             status = "OVERVALUED"
         elif diff_pct < -0.5:
             status = "UNDERVALUED"
         else:
             status = "FAIR VALUE"
+
         results.append({"pair": pair, "status": status, "diff": diff_pct})
+        log.info(f"  {pair}: {status} ({diff_pct:+.2f}%)")
+
     return results
 
+
 # ──────────────────────────────────────────
-#  FORMAT PESAN RINGKAS
+#  FORMAT PESAN
 # ──────────────────────────────────────────
-def format_msg(results):
+def format_msg(results: list) -> str:
     now   = datetime.now().strftime("%d %b %Y %H:%M WIB")
     over  = [r for r in results if r["status"] == "OVERVALUED"]
     under = [r for r in results if r["status"] == "UNDERVALUED"]
@@ -201,10 +251,11 @@ def format_msg(results):
     ]
     return "\n".join(lines)
 
+
 # ──────────────────────────────────────────
 #  TELEGRAM
 # ──────────────────────────────────────────
-def send_message(text, chat_id=CHAT_ID, thread_id=THREAD_ID):
+def send_message(text: str, chat_id: str = CHAT_ID, thread_id: int = THREAD_ID):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     try:
         r = requests.post(url, json={
@@ -220,7 +271,7 @@ def send_message(text, chat_id=CHAT_ID, thread_id=THREAD_ID):
     except Exception as e:
         log.error(f"send_message error: {e}")
 
-def get_updates(offset=0):
+def get_updates(offset: int = 0) -> list:
     try:
         r = requests.get(
             f"https://api.telegram.org/bot{TOKEN}/getUpdates",
@@ -230,21 +281,26 @@ def get_updates(offset=0):
     except Exception:
         return []
 
+
 # ──────────────────────────────────────────
 #  PROSES YIELD
 # ──────────────────────────────────────────
-def run_yield(chat_id=CHAT_ID, thread_id=THREAD_ID):
-    send_message("⏳ Mengambil data yield & FX...\nProses ~3-5 menit, harap tunggu.", chat_id, thread_id)
+def run_yield(chat_id: str = CHAT_ID, thread_id: int = THREAD_ID):
+    send_message("⏳ Mengambil data yield & FX...\nProses ~1-2 menit, harap tunggu.", chat_id, thread_id)
     try:
-        yields  = get_all_yields()
-        results = calculate(yields)
+        yields    = get_all_yields()
+        fx_prices = get_all_fx_prices()
+        results   = calculate(yields, fx_prices)
+
         if not results:
             send_message("⚠️ Gagal mengambil data. Coba lagi nanti.", chat_id, thread_id)
             return
+
         send_message(format_msg(results), chat_id, thread_id)
     except Exception as e:
         log.error(f"run_yield error: {e}")
         send_message(f"❌ Error: {e}", chat_id, thread_id)
+
 
 # ──────────────────────────────────────────
 #  SCHEDULER
@@ -257,6 +313,7 @@ def start_scheduler():
         schedule.run_pending()
         time.sleep(30)
 
+
 # ──────────────────────────────────────────
 #  POLLING — hanya respon di topic Valuasi
 # ──────────────────────────────────────────
@@ -266,7 +323,7 @@ def polling_loop():
     while True:
         updates = get_updates(offset)
         for upd in updates:
-            offset = upd["update_id"] + 1
+            offset  = upd["update_id"] + 1
             msg     = upd.get("message", {})
             text    = msg.get("text", "").strip()
             chat_id = str(msg.get("chat", {}).get("id", ""))
@@ -285,7 +342,7 @@ def polling_loop():
                     "Bot ini menganalisis valuasi mata uang berdasarkan "
                     "selisih yield obligasi 2 tahun antar negara.\n\n"
                     "📌 *Command:*\n"
-                    "/yield — Cek valuasi 32 pair FX sekarang\n"
+                    "/yield — Cek valuasi 31 pair FX sekarang\n"
                     "/help  — Penjelasan cara kerja\n\n"
                     "⏰ Auto-kirim setiap hari jam 08:00 WIB",
                     chat_id, THREAD_ID,
@@ -306,6 +363,7 @@ def polling_loop():
                     chat_id, THREAD_ID,
                 )
         time.sleep(2)
+
 
 # ──────────────────────────────────────────
 #  MAIN
