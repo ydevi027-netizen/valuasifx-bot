@@ -21,21 +21,15 @@ from datetime import datetime
 # ──────────────────────────────────────────
 TOKEN     = os.environ.get("BOT_TOKEN", "8752357076:AAHVDQckEFwiRafaUfduHTOLwH5IC6A7fE4")
 CHAT_ID   = os.environ.get("CHAT_ID",   "-1003890278221")
-THREAD_ID = int(os.environ.get("THREAD_ID", "7"))   # Topic: Valuasi
-HOUR      = int(os.environ.get("SEND_HOUR",   "1")) # 08:00 WIB = 01:00 UTC
+THREAD_ID = int(os.environ.get("THREAD_ID", "7"))
+HOUR      = int(os.environ.get("SEND_HOUR",   "1"))
 MINUTE    = int(os.environ.get("SEND_MINUTE", "0"))
 
-# ──────────────────────────────────────────
-#  LOGGING
-# ──────────────────────────────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
 # ──────────────────────────────────────────
-#  YIELD 2Y — URL INVESTING.COM
+#  YIELD 2Y
 # ──────────────────────────────────────────
 YIELD_URLS = {
     "US": "https://www.investing.com/rates-bonds/u.s.-2-year-bond-yield",
@@ -49,9 +43,6 @@ YIELD_URLS = {
     "CN": "https://www.investing.com/rates-bonds/china-2-year-bond-yield",
 }
 
-# ──────────────────────────────────────────
-#  24 PAIR FX
-# ──────────────────────────────────────────
 FX_PAIRS = [
     ("EURUSD", "EU", "US", "eur-usd"),
     ("AUDUSD", "AU", "US", "aud-usd"),
@@ -80,11 +71,7 @@ FX_PAIRS = [
 ]
 
 HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
     "Accept-Language": "en-US,en;q=0.9",
     "Referer": "https://www.investing.com/",
 }
@@ -92,7 +79,7 @@ HEADERS = {
 # ──────────────────────────────────────────
 #  SCRAPING
 # ──────────────────────────────────────────
-def _parse_price(soup) -> float | None:
+def _parse_price(soup):
     for sel in ['[data-test="instrument-price-last"]', ".text-5xl", "#last_last"]:
         tag = soup.select_one(sel)
         if tag:
@@ -102,8 +89,7 @@ def _parse_price(soup) -> float | None:
                 continue
     return None
 
-
-def scrape_yield(country: str) -> float | None:
+def scrape_yield(country):
     try:
         r = requests.get(YIELD_URLS[country], headers=HEADERS, timeout=15)
         return _parse_price(BeautifulSoup(r.text, "lxml"))
@@ -111,8 +97,7 @@ def scrape_yield(country: str) -> float | None:
         log.warning(f"Yield error [{country}]: {e}")
         return None
 
-
-def scrape_fx(slug: str) -> float | None:
+def scrape_fx(slug):
     try:
         r = requests.get(f"https://www.investing.com/currencies/{slug}", headers=HEADERS, timeout=15)
         return _parse_price(BeautifulSoup(r.text, "lxml"))
@@ -120,9 +105,7 @@ def scrape_fx(slug: str) -> float | None:
         log.warning(f"FX error [{slug}]: {e}")
         return None
 
-
-def get_all_yields() -> dict:
-    log.info("Scraping yield data...")
+def get_all_yields():
     yields = {}
     for code in YIELD_URLS:
         yields[code] = scrape_yield(code)
@@ -130,77 +113,65 @@ def get_all_yields() -> dict:
         time.sleep(2)
     return yields
 
-
-# ──────────────────────────────────────────
-#  KALKULASI
-# ──────────────────────────────────────────
-def calculate(yields: dict) -> list[dict]:
+def calculate(yields):
     results = []
     for pair, base, quote, slug in FX_PAIRS:
         yb = yields.get(base)
         yq = yields.get(quote)
         if yb is None or yq is None:
             continue
-
         spread = yb - yq
-        fx     = scrape_fx(slug)
+        fx = scrape_fx(slug)
         time.sleep(1.5)
         if fx is None:
             continue
-
-        fair     = fx / (1 + spread / 100)
+        fair = fx / (1 + spread / 100)
         diff_pct = ((fx - fair) / fair) * 100
-
         if diff_pct > 0.5:
-            status = "🔴 OVERVALUED"
+            status = "OVERVALUED"
+            emoji  = "🔴"
         elif diff_pct < -0.5:
-            status = "🟢 UNDERVALUED"
+            status = "UNDERVALUED"
+            emoji  = "🟢"
         else:
-            status = "⚪ FAIR VALUE"
-
+            status = "FAIR VALUE"
+            emoji  = "⚪"
         results.append({
-            "pair":   pair,
-            "spread": spread,
-            "ybase":  yb,
-            "yquote": yq,
-            "fx":     fx,
-            "fair":   fair,
-            "diff":   diff_pct,
-            "status": status,
+            "pair": pair, "status": status,
+            "emoji": emoji, "diff": diff_pct,
         })
     return results
 
+# ──────────────────────────────────────────
+#  FORMAT PESAN — RINGKAS
+# ──────────────────────────────────────────
+def format_msg(results):
+    now = datetime.now().strftime("%d %b %Y %H:%M WIB")
 
-# ──────────────────────────────────────────
-#  FORMAT PESAN
-# ──────────────────────────────────────────
-def format_msg(results: list[dict]) -> str:
-    now   = datetime.now().strftime("%d %b %Y %H:%M WIB")
-    over  = [r for r in results if "OVER"  in r["status"]]
-    under = [r for r in results if "UNDER" in r["status"]]
-    fair  = [r for r in results if "FAIR"  in r["status"]]
+    over  = [r for r in results if r["status"] == "OVERVALUED"]
+    under = [r for r in results if r["status"] == "UNDERVALUED"]
+    fair  = [r for r in results if r["status"] == "FAIR VALUE"]
 
     lines = [
         "📊 *YIELD SPREAD FX VALUATION*",
-        f"🕐 _{now}_",
-        "Tenor: 2Y | Sumber: Investing.com",
+        f"🕐 _{now}_ | Tenor: 2Y",
         "━━━━━━━━━━━━━━━━━━━━━━",
     ]
 
-    def section(emoji, title, data):
-        if not data:
-            return
-        lines.append(f"\n{emoji} *{title}* ({len(data)} pair)")
-        for r in data:
-            lines.append(
-                f"`{r['pair']:<8}` {r['diff']:+.2f}%\n"
-                f"  Spread: {r['spread']:+.2f}% | "
-                f"FX: {r['fx']:.5f} | Fair: {r['fair']:.5f}"
-            )
+    if over:
+        lines.append("\n🔴 *OVERVALUED*")
+        for r in over:
+            lines.append(f"`{r['pair']}` : Overvalued ({r['diff']:+.2f}%)")
 
-    section("🔴", "OVERVALUED",  over)
-    section("🟢", "UNDERVALUED", under)
-    section("⚪", "FAIR VALUE",  fair)
+    if under:
+        lines.append("\n🟢 *UNDERVALUED*")
+        for r in under:
+            lines.append(f"`{r['pair']}` : Undervalued ({r['diff']:+.2f}%)")
+
+    if fair:
+        lines.append("\n⚪ *FAIR VALUE*")
+        for r in fair:
+            lines.append(f"`{r['pair']}` : Fair Value ({r['diff']:+.2f}%)")
 
     lines += [
         "\n━━━━━━━━━━━━━━━━━━━━━━",
@@ -208,41 +179,39 @@ def format_msg(results: list[dict]) -> str:
     ]
     return "\n".join(lines)
 
-
 # ──────────────────────────────────────────
-#  KIRIM KE TELEGRAM (support topic)
+#  TELEGRAM
 # ──────────────────────────────────────────
-def send_message(text: str, chat_id: str = CHAT_ID, thread_id: int = THREAD_ID):
+def send_message(text, chat_id=CHAT_ID, thread_id=THREAD_ID):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    payload = {
-        "chat_id":           chat_id,
-        "text":              text,
-        "parse_mode":        "Markdown",
-        "message_thread_id": thread_id,
-    }
     try:
-        r = requests.post(url, json=payload, timeout=15)
+        r = requests.post(url, json={
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "Markdown",
+            "message_thread_id": thread_id,
+        }, timeout=15)
         if r.ok:
-            log.info("Pesan terkirim ke topic Valuasi")
+            log.info("Pesan terkirim")
         else:
             log.error(f"Telegram error: {r.text}")
     except Exception as e:
         log.error(f"send_message error: {e}")
 
-
-def get_updates(offset: int = 0) -> list:
-    url = f"https://api.telegram.org/bot{TOKEN}/getUpdates"
+def get_updates(offset=0):
     try:
-        r = requests.get(url, params={"offset": offset, "timeout": 30}, timeout=35)
+        r = requests.get(
+            f"https://api.telegram.org/bot{TOKEN}/getUpdates",
+            params={"offset": offset, "timeout": 30}, timeout=35
+        )
         return r.json().get("result", [])
     except Exception:
         return []
 
-
 # ──────────────────────────────────────────
 #  PROSES YIELD
 # ──────────────────────────────────────────
-def run_yield(chat_id: str = CHAT_ID, thread_id: int = THREAD_ID):
+def run_yield(chat_id=CHAT_ID, thread_id=THREAD_ID):
     send_message("⏳ Mengambil data yield & FX...\nProses ~2-3 menit, harap tunggu.", chat_id, thread_id)
     try:
         yields  = get_all_yields()
@@ -255,24 +224,19 @@ def run_yield(chat_id: str = CHAT_ID, thread_id: int = THREAD_ID):
         log.error(f"run_yield error: {e}")
         send_message(f"❌ Error: {e}", chat_id, thread_id)
 
-
 # ──────────────────────────────────────────
-#  SCHEDULER
+#  SCHEDULER & POLLING
 # ──────────────────────────────────────────
 def start_scheduler():
     send_time = f"{HOUR:02d}:{MINUTE:02d}"
     schedule.every().day.at(send_time).do(run_yield)
-    log.info(f"Scheduler aktif — kirim setiap hari jam {send_time} UTC (08:00 WIB)")
+    log.info(f"Scheduler aktif — {send_time} UTC (08:00 WIB)")
     while True:
         schedule.run_pending()
         time.sleep(30)
 
-
-# ──────────────────────────────────────────
-#  POLLING
-# ──────────────────────────────────────────
 def polling_loop():
-    log.info("Bot berjalan... menunggu pesan.")
+    log.info("Bot berjalan...")
     offset = 0
     while True:
         updates = get_updates(offset)
@@ -282,10 +246,8 @@ def polling_loop():
             text    = msg.get("text", "").strip()
             chat_id = str(msg.get("chat", {}).get("id", ""))
             t_id    = msg.get("message_thread_id", THREAD_ID)
-
             if not text or not chat_id:
                 continue
-
             if text.startswith("/start"):
                 send_message(
                     "👋 *Selamat datang di ValuasiFX Bot!*\n\n"
@@ -297,12 +259,8 @@ def polling_loop():
                     "⏰ Auto-kirim setiap hari jam 08:00 WIB",
                     chat_id, t_id,
                 )
-
             elif text.startswith("/yield"):
-                threading.Thread(
-                    target=run_yield, args=(chat_id, t_id), daemon=True
-                ).start()
-
+                threading.Thread(target=run_yield, args=(chat_id, t_id), daemon=True).start()
             elif text.startswith("/help"):
                 send_message(
                     "📖 *Cara Kerja Bot*\n\n"
@@ -318,10 +276,6 @@ def polling_loop():
                 )
         time.sleep(2)
 
-
-# ──────────────────────────────────────────
-#  MAIN
-# ──────────────────────────────────────────
 if __name__ == "__main__":
     threading.Thread(target=start_scheduler, daemon=True).start()
     polling_loop()
