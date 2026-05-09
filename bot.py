@@ -3,13 +3,18 @@
 ║   FX YIELD SPREAD BOT — TELEGRAM         ║
 ║   Group  : PETILASAN                     ║
 ║   Topic  : Valuasi (Thread ID: 7)        ║
-║   Data   : Investing.com                 ║
-║   Pairs  : 31 pair FX + GBP lengkap     ║
+║   Yield  : Hardcode (update tiap minggu) ║
+║   FX     : fxratesapi.com (gratis)       ║
 ╚══════════════════════════════════════════╝
+
+CARA UPDATE YIELD MINGGUAN:
+1. Buka investing.com/rates-bonds
+2. Cari yield 2Y tiap negara
+3. Update angka di bagian MANUAL_YIELDS
+4. Commit ke GitHub → Railway auto-deploy
 """
 
-import os, time, threading, logging, requests, schedule, random
-from bs4 import BeautifulSoup
+import os, time, threading, logging, requests, schedule
 from datetime import datetime
 
 # ──────────────────────────────────────────
@@ -25,138 +30,150 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 log = logging.getLogger(__name__)
 
 # ──────────────────────────────────────────
-#  ROTASI USER AGENT — kurangi kemungkinan diblok
+#  *** YIELD 2Y MANUAL — UPDATE TIAP MINGGU ***
+#  Sumber: investing.com/rates-bonds
+#  Update terakhir: 10 Mei 2026
 # ──────────────────────────────────────────
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-]
-
-def get_headers():
-    return {
-        "User-Agent": random.choice(USER_AGENTS),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Referer": "https://www.google.com/",
-        "DNT": "1",
-        "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1",
-    }
-
-# ──────────────────────────────────────────
-#  YIELD 2Y — URL INVESTING.COM
-# ──────────────────────────────────────────
-YIELD_URLS = {
-    "US": "https://www.investing.com/rates-bonds/u.s.-2-year-bond-yield",
-    "EU": "https://www.investing.com/rates-bonds/germany-2-year-bond-yield",
-    "GB": "https://www.investing.com/rates-bonds/u.k.-2-year-bond-yield",
-    "JP": "https://www.investing.com/rates-bonds/japan-2-year-bond-yield",
-    "AU": "https://www.investing.com/rates-bonds/australia-2-year-bond-yield",
-    "NZ": "https://www.investing.com/rates-bonds/new-zealand-2-year-bond-yield",
-    "CA": "https://www.investing.com/rates-bonds/canada-2-year-bond-yield",
-    "CH": "https://www.investing.com/rates-bonds/switzerland-2-year-bond-yield",
-    "CN": "https://www.investing.com/rates-bonds/china-2-year-bond-yield",
+YIELDS = {
+    "US":  3.93,   # US 2Y Treasury
+    "EU":  2.05,   # Germany 2Y Bund
+    "GB":  4.10,   # UK 2Y Gilt
+    "JP":  0.35,   # Japan 2Y JGB
+    "AU":  3.85,   # Australia 2Y
+    "NZ":  3.60,   # New Zealand 2Y
+    "CA":  2.90,   # Canada 2Y
+    "CH": -0.25,   # Switzerland 2Y
+    "CN":  1.50,   # China 2Y
 }
 
 # ──────────────────────────────────────────
-#  31 PAIR FX LENGKAP + GBP
+#  31 PAIR FX LENGKAP
+# pair, base_yield, quote_yield, base_currency, quote_currency
 # ──────────────────────────────────────────
 FX_PAIRS = [
     # Major USD
-    ("EURUSD", "EU", "US", "eur-usd"),
-    ("GBPUSD", "GB", "US", "gbp-usd"),
-    ("AUDUSD", "AU", "US", "aud-usd"),
-    ("NZDUSD", "NZ", "US", "nzd-usd"),
-    ("USDJPY", "US", "JP", "usd-jpy"),
-    ("USDCAD", "US", "CA", "usd-cad"),
-    ("USDCHF", "US", "CH", "usd-chf"),
-    ("USDCNH", "US", "CN", "usd-cnh"),
+    ("EURUSD", "EU", "US", "EUR", "USD"),
+    ("GBPUSD", "GB", "US", "GBP", "USD"),
+    ("AUDUSD", "AU", "US", "AUD", "USD"),
+    ("NZDUSD", "NZ", "US", "NZD", "USD"),
+    ("USDJPY", "US", "JP", "USD", "JPY"),
+    ("USDCAD", "US", "CA", "USD", "CAD"),
+    ("USDCHF", "US", "CH", "USD", "CHF"),
+    ("USDCNH", "US", "CN", "USD", "CNH"),
     # EUR cross
-    ("EURGBP", "EU", "GB", "eur-gbp"),
-    ("EURJPY", "EU", "JP", "eur-jpy"),
-    ("EURCAD", "EU", "CA", "eur-cad"),
-    ("EURCHF", "EU", "CH", "eur-chf"),
-    ("EURNZD", "EU", "NZ", "eur-nzd"),
-    ("EURAUD", "EU", "AU", "eur-aud"),
+    ("EURGBP", "EU", "GB", "EUR", "GBP"),
+    ("EURJPY", "EU", "JP", "EUR", "JPY"),
+    ("EURCAD", "EU", "CA", "EUR", "CAD"),
+    ("EURCHF", "EU", "CH", "EUR", "CHF"),
+    ("EURNZD", "EU", "NZ", "EUR", "NZD"),
+    ("EURAUD", "EU", "AU", "EUR", "AUD"),
     # GBP cross
-    ("GBPJPY", "GB", "JP", "gbp-jpy"),
-    ("GBPCAD", "GB", "CA", "gbp-cad"),
-    ("GBPCHF", "GB", "CH", "gbp-chf"),
-    ("GBPNZD", "GB", "NZ", "gbp-nzd"),
-    ("GBPAUD", "GB", "AU", "gbp-aud"),
+    ("GBPJPY", "GB", "JP", "GBP", "JPY"),
+    ("GBPCAD", "GB", "CA", "GBP", "CAD"),
+    ("GBPCHF", "GB", "CH", "GBP", "CHF"),
+    ("GBPNZD", "GB", "NZ", "GBP", "NZD"),
+    ("GBPAUD", "GB", "AU", "GBP", "AUD"),
     # AUD cross
-    ("AUDJPY", "AU", "JP", "aud-jpy"),
-    ("AUDCAD", "AU", "CA", "aud-cad"),
-    ("AUDCHF", "AU", "CH", "aud-chf"),
-    ("AUDNZD", "AU", "NZ", "aud-nzd"),
-    ("AUDEUR", "AU", "EU", "aud-eur"),
-    ("AUDGBP", "AU", "GB", "aud-gbp"),
+    ("AUDJPY", "AU", "JP", "AUD", "JPY"),
+    ("AUDCAD", "AU", "CA", "AUD", "CAD"),
+    ("AUDCHF", "AU", "CH", "AUD", "CHF"),
+    ("AUDNZD", "AU", "NZ", "AUD", "NZD"),
+    ("AUDEUR", "AU", "EU", "AUD", "EUR"),
+    ("AUDGBP", "AU", "GB", "AUD", "GBP"),
     # NZD cross
-    ("NZDJPY", "NZ", "JP", "nzd-jpy"),
-    ("NZDCAD", "NZ", "CA", "nzd-cad"),
-    ("NZDCHF", "NZ", "CH", "nzd-chf"),
-    ("NZDGBP", "NZ", "GB", "nzd-gbp"),
+    ("NZDJPY", "NZ", "JP", "NZD", "JPY"),
+    ("NZDCAD", "NZ", "CA", "NZD", "CAD"),
+    ("NZDCHF", "NZ", "CH", "NZD", "CHF"),
+    ("NZDGBP", "NZ", "GB", "NZD", "GBP"),
     # CAD cross
-    ("CADJPY", "CA", "JP", "cad-jpy"),
-    ("CADCHF", "CA", "CH", "cad-chf"),
+    ("CADJPY", "CA", "JP", "CAD", "JPY"),
+    ("CADCHF", "CA", "CH", "CAD", "CHF"),
 ]
 
 # ──────────────────────────────────────────
-#  SCRAPING DENGAN RETRY
+#  AMBIL SEMUA HARGA FX SEKALIGUS
+#  Pakai fxratesapi.com — gratis, tidak perlu key
 # ──────────────────────────────────────────
-def _parse_price(soup):
-    for sel in ['[data-test="instrument-price-last"]', ".text-5xl", "#last_last"]:
-        tag = soup.select_one(sel)
-        if tag:
-            try:
-                return float(tag.get_text(strip=True).replace(",", ""))
-            except ValueError:
-                continue
-    return None
+def get_all_fx() -> dict:
+    """
+    Ambil semua rate sekaligus dari fxratesapi
+    Base: USD, lalu hitung cross rate
+    """
+    log.info("Mengambil harga FX dari fxratesapi...")
+    rates_usd = {}
 
-def scrape_url(url, retries=3):
-    for attempt in range(retries):
+    try:
+        url = "https://api.fxratesapi.com/latest?base=USD&currencies=EUR,GBP,AUD,NZD,JPY,CAD,CHF,CNH,CNY"
+        r = requests.get(url, timeout=15)
+        data = r.json()
+        if data.get("success") or data.get("rates"):
+            rates_usd = data.get("rates", {})
+            # Tambah USD sendiri
+            rates_usd["USD"] = 1.0
+            log.info(f"  Rates USD base: {rates_usd}")
+        else:
+            log.warning(f"  fxratesapi gagal: {data}")
+    except Exception as e:
+        log.error(f"  fxratesapi error: {e}")
+
+    # Fallback: coba exchangerate-api
+    if not rates_usd:
         try:
-            time.sleep(random.uniform(1.5, 3.5))  # jeda acak
-            r = requests.get(url, headers=get_headers(), timeout=20)
-            if r.status_code == 200:
-                return _parse_price(BeautifulSoup(r.text, "lxml"))
-            elif r.status_code == 403:
-                log.warning(f"  403 blocked, retry {attempt+1}/{retries}...")
-                time.sleep(random.uniform(5, 10))
+            log.info("  Mencoba fallback exchangerate-api...")
+            url2 = "https://open.er-api.com/v6/latest/USD"
+            r2 = requests.get(url2, timeout=15)
+            data2 = r2.json()
+            if data2.get("result") == "success":
+                rates_usd = data2.get("rates", {})
+                rates_usd["USD"] = 1.0
+                log.info(f"  Fallback OK: {list(rates_usd.keys())[:5]}")
+        except Exception as e2:
+            log.error(f"  Fallback error: {e2}")
+
+    # Hitung semua pair dari USD base
+    fx_prices = {}
+    for pair, _, _, base_cur, quote_cur in FX_PAIRS:
+        try:
+            # Handle CNH → CNY fallback
+            b = base_cur if base_cur != "CNH" else "CNY"
+            q = quote_cur if quote_cur != "CNH" else "CNY"
+
+            if b == "USD":
+                # USDJPY = rates_usd[JPY]
+                price = rates_usd.get(q)
+            elif q == "USD":
+                # EURUSD = 1 / rates_usd[EUR]
+                rate = rates_usd.get(b)
+                price = 1 / rate if rate else None
             else:
-                log.warning(f"  Status {r.status_code}")
+                # Cross: EURJPY = rates_usd[JPY] / rates_usd[EUR]
+                rb = rates_usd.get(b)
+                rq = rates_usd.get(q)
+                price = rq / rb if (rb and rq) else None
+
+            fx_prices[pair] = price
+            if price:
+                log.info(f"  {pair}: {price:.5f}")
+            else:
+                log.warning(f"  {pair}: tidak ada data")
         except Exception as e:
-            log.warning(f"  Error: {e}, retry {attempt+1}/{retries}")
-            time.sleep(3)
-    return None
+            log.warning(f"  {pair} calc error: {e}")
+            fx_prices[pair] = None
 
-def get_all_yields():
-    log.info("Scraping yield data...")
-    yields = {}
-    for code, url in YIELD_URLS.items():
-        val = scrape_url(url)
-        yields[code] = val
-        log.info(f"  {code}: {val}")
-    return yields
+    return fx_prices
 
-def calculate(yields):
+# ──────────────────────────────────────────
+#  KALKULASI VALUASI
+# ──────────────────────────────────────────
+def calculate(fx_prices: dict) -> list:
     results = []
-    for pair, base, quote, slug in FX_PAIRS:
-        yb = yields.get(base)
-        yq = yields.get(quote)
-        if yb is None or yq is None:
-            log.warning(f"  Skip {pair}: yield kosong")
-            continue
+    for pair, base, quote, _, _ in FX_PAIRS:
+        yb = YIELDS.get(base)
+        yq = YIELDS.get(quote)
+        fx = fx_prices.get(pair)
 
-        url = f"https://www.investing.com/currencies/{slug}"
-        fx  = scrape_url(url)
-        if fx is None:
-            log.warning(f"  Skip {pair}: harga FX tidak ada")
+        if yb is None or yq is None or fx is None:
+            log.warning(f"  Skip {pair}: data tidak lengkap")
             continue
 
         spread   = yb - yq
@@ -178,7 +195,7 @@ def calculate(yields):
 # ──────────────────────────────────────────
 #  FORMAT PESAN
 # ──────────────────────────────────────────
-def format_msg(results):
+def format_msg(results: list) -> str:
     now   = datetime.now().strftime("%d %b %Y %H:%M WIB")
     over  = [r for r in results if r["status"] == "OVERVALUED"]
     under = [r for r in results if r["status"] == "UNDERVALUED"]
@@ -242,10 +259,10 @@ def get_updates(offset=0):
 #  PROSES YIELD
 # ──────────────────────────────────────────
 def run_yield(chat_id=CHAT_ID, thread_id=THREAD_ID):
-    send_message("⏳ Mengambil data yield & FX...\nProses ~5-7 menit, harap tunggu.", chat_id, thread_id)
+    send_message("⏳ Mengambil data FX...\nProses ~10 detik, harap tunggu.", chat_id, thread_id)
     try:
-        yields  = get_all_yields()
-        results = calculate(yields)
+        fx_prices = get_all_fx()
+        results   = calculate(fx_prices)
         if not results:
             send_message("⚠️ Gagal mengambil data. Coba lagi nanti.", chat_id, thread_id)
             return
