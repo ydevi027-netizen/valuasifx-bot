@@ -2,7 +2,7 @@
 ╔══════════════════════════════════════════╗
 ║   FX YIELD SPREAD BOT — TELEGRAM         ║
 ║   Group  : PETILASAN                     ║
-║   Topic  : Valuasi                       ║
+║   Topic  : Valuasi (Thread ID: 7)        ║
 ╚══════════════════════════════════════════╝
 """
 
@@ -21,8 +21,8 @@ from datetime import datetime
 # ──────────────────────────────────────────
 TOKEN     = os.environ.get("BOT_TOKEN", "8752357076:AAHVDQckEFwiRafaUfduHTOLwH5IC6A7fE4")
 CHAT_ID   = os.environ.get("CHAT_ID",   "-1003890278221")
-THREAD_ID = int(os.environ.get("THREAD_ID", "7"))
-HOUR      = int(os.environ.get("SEND_HOUR",   "1"))
+THREAD_ID = int(os.environ.get("THREAD_ID", "7"))   # Topic Valuasi
+HOUR      = int(os.environ.get("SEND_HOUR",   "1")) # 08:00 WIB = 01:00 UTC
 MINUTE    = int(os.environ.get("SEND_MINUTE", "0"))
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -129,25 +129,18 @@ def calculate(yields):
         diff_pct = ((fx - fair) / fair) * 100
         if diff_pct > 0.5:
             status = "OVERVALUED"
-            emoji  = "🔴"
         elif diff_pct < -0.5:
             status = "UNDERVALUED"
-            emoji  = "🟢"
         else:
             status = "FAIR VALUE"
-            emoji  = "⚪"
-        results.append({
-            "pair": pair, "status": status,
-            "emoji": emoji, "diff": diff_pct,
-        })
+        results.append({"pair": pair, "status": status, "diff": diff_pct})
     return results
 
 # ──────────────────────────────────────────
-#  FORMAT PESAN — RINGKAS
+#  FORMAT PESAN RINGKAS
 # ──────────────────────────────────────────
 def format_msg(results):
-    now = datetime.now().strftime("%d %b %Y %H:%M WIB")
-
+    now   = datetime.now().strftime("%d %b %Y %H:%M WIB")
     over  = [r for r in results if r["status"] == "OVERVALUED"]
     under = [r for r in results if r["status"] == "UNDERVALUED"]
     fair  = [r for r in results if r["status"] == "FAIR VALUE"]
@@ -225,7 +218,7 @@ def run_yield(chat_id=CHAT_ID, thread_id=THREAD_ID):
         send_message(f"❌ Error: {e}", chat_id, thread_id)
 
 # ──────────────────────────────────────────
-#  SCHEDULER & POLLING
+#  SCHEDULER
 # ──────────────────────────────────────────
 def start_scheduler():
     send_time = f"{HOUR:02d}:{MINUTE:02d}"
@@ -235,6 +228,9 @@ def start_scheduler():
         schedule.run_pending()
         time.sleep(30)
 
+# ──────────────────────────────────────────
+#  POLLING — hanya respon di topic Valuasi
+# ──────────────────────────────────────────
 def polling_loop():
     log.info("Bot berjalan...")
     offset = 0
@@ -245,9 +241,18 @@ def polling_loop():
             msg     = upd.get("message", {})
             text    = msg.get("text", "").strip()
             chat_id = str(msg.get("chat", {}).get("id", ""))
-            t_id    = msg.get("message_thread_id", THREAD_ID)
+            t_id    = msg.get("message_thread_id")
+
             if not text or not chat_id:
                 continue
+
+            # ── FILTER: hanya respon jika di topic Valuasi (THREAD_ID=7) ──
+            if t_id != THREAD_ID:
+                log.info(f"Pesan dari topic lain (thread {t_id}), diabaikan.")
+                continue
+
+            log.info(f"Pesan diterima di topic Valuasi: {text}")
+
             if text.startswith("/start"):
                 send_message(
                     "👋 *Selamat datang di ValuasiFX Bot!*\n\n"
@@ -257,10 +262,10 @@ def polling_loop():
                     "/yield — Cek valuasi 24 pair FX sekarang\n"
                     "/help  — Penjelasan cara kerja\n\n"
                     "⏰ Auto-kirim setiap hari jam 08:00 WIB",
-                    chat_id, t_id,
+                    chat_id, THREAD_ID,
                 )
             elif text.startswith("/yield"):
-                threading.Thread(target=run_yield, args=(chat_id, t_id), daemon=True).start()
+                threading.Thread(target=run_yield, args=(chat_id, THREAD_ID), daemon=True).start()
             elif text.startswith("/help"):
                 send_message(
                     "📖 *Cara Kerja Bot*\n\n"
@@ -272,10 +277,13 @@ def polling_loop():
                     "🟢 UNDERVALUED → pair kemungkinan terlalu murah\n"
                     "⚪ FAIR VALUE  → harga wajar secara yield\n\n"
                     "⚠️ Ini bukan rekomendasi trading.",
-                    chat_id, t_id,
+                    chat_id, THREAD_ID,
                 )
         time.sleep(2)
 
+# ──────────────────────────────────────────
+#  MAIN
+# ──────────────────────────────────────────
 if __name__ == "__main__":
     threading.Thread(target=start_scheduler, daemon=True).start()
     polling_loop()
