@@ -44,63 +44,58 @@ YIELDS_FALLBACK = {
 }
 
 # ──────────────────────────────────────────
-# AMBIL YIELD OTOMATIS DARI INVESTING.COM
-# Pakai endpoint JSON publik mereka
+# AMBIL YIELD OTOMATIS DARI STOOQ.COM
+# CSV publik, tidak perlu API key
 # ──────────────────────────────────────────
-
-# ID instrument Investing.com untuk yield 2Y tiap negara
-INVESTING_IDS = {
-    "US": "23705",   # US 2Y Treasury
-    "EU": "23693",   # Germany 2Y Bund
-    "GB": "23678",   # UK 2Y Gilt
-    "JP": "23696",   # Japan 2Y
-    "AU": "23669",   # Australia 2Y
-    "NZ": "23698",   # New Zealand 2Y
-    "CA": "23672",   # Canada 2Y
-    "CH": "23673",   # Switzerland 2Y
-    "CN": "29680",   # China 2Y
+STOOQ_TICKERS = {
+    "US": "2yusy.b",   # US 2Y Treasury
+    "EU": "2ydey.b",   # Germany 2Y Bund (proxy EUR)
+    "GB": "2ygby.b",   # UK 2Y Gilt
+    "JP": "2yjpy.b",   # Japan 2Y JGB
+    "AU": "2yauy.b",   # Australia 2Y
+    "NZ": "2ynzy.b",   # New Zealand 2Y
+    "CA": "2ycay.b",   # Canada 2Y
+    "CH": "2ychy.b",   # Switzerland 2Y
+    "CN": "2ycny.b",   # China 2Y
 }
 
-def get_yield_investing(instrument_id: str) -> float | None:
-    """Ambil yield terkini dari Investing.com."""
+def get_yield_stooq(ticker: str) -> float | None:
+    """Ambil yield terbaru dari Stooq.com via CSV."""
     try:
-        url = f"https://api.investing.com/api/financials/historical/{instrument_id}"
-        headers = {
-            "User-Agent": "Mozilla/5.0",
-            "Accept": "application/json",
-            "X-Requested-With": "XMLHttpRequest",
-            "Referer": "https://www.investing.com/",
-            "domain-id": "www",
-        }
+        url = f"https://stooq.com/q/d/l/?s={ticker}&i=d"
+        headers = {"User-Agent": "Mozilla/5.0"}
         r = requests.get(url, headers=headers, timeout=10)
-        data = r.json()
-        # Ambil nilai terbaru
-        rows = data.get("data", {}).get("rows", [])
-        if rows:
-            val = float(str(rows[0].get("last_close", "")).replace(",", ".").replace("%", ""))
-            return round(val, 2)
+        if r.status_code != 200 or "No data" in r.text or len(r.text) < 30:
+            return None
+        lines = r.text.strip().splitlines()
+        if len(lines) < 2:
+            return None
+        # Format CSV: Date,Open,High,Low,Close,Volume
+        last = lines[-1].split(",")
+        val = float(last[4])  # Close = yield %
+        return round(val, 2)
     except Exception as e:
-        log.debug(f"Investing.com ID {instrument_id} error: {e}")
+        log.debug(f"Stooq {ticker} error: {e}")
     return None
 
 def get_yields_auto() -> dict:
     """
-    Ambil yield 2Y otomatis dari Investing.com.
+    Ambil yield 2Y otomatis dari Stooq.com.
     Kalau gagal, pakai fallback hardcode.
     """
-    log.info("Mengambil yield 2Y dari Investing.com...")
+    log.info("Mengambil yield 2Y dari Stooq.com...")
     yields = {}
     used_fallback = []
 
-    for country, inv_id in INVESTING_IDS.items():
-        val = get_yield_investing(inv_id)
+    for country, ticker in STOOQ_TICKERS.items():
+        val = get_yield_stooq(ticker)
         if val is not None:
             yields[country] = val
-            log.info(f"  {country}: {val}%")
+            log.info(f"  {country} ({ticker}): {val}%")
         else:
             yields[country] = YIELDS_FALLBACK.get(country, 0.0)
             used_fallback.append(country)
-            log.warning(f"  {country}: gagal — pakai fallback {yields[country]}%")
+            log.warning(f"  {country} ({ticker}): gagal — pakai fallback {yields[country]}%")
 
     if used_fallback:
         log.info(f"Fallback dipakai untuk: {used_fallback}")
