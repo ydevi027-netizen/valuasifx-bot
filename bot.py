@@ -1,30 +1,11 @@
 """
-╔══════════════════════════════════════════╗
-║  FX YIELD SPREAD BOT — TELEGRAM          ║
-║  Group  : PETILASAN                      ║
-║  Topic  : Valuasi (Thread ID: 7)         ║
-║  Yield  : Official Central Bank APIs     ║
-║  FX     : fxratesapi / open.er-api       ║
-╚══════════════════════════════════════════╝
-
-Sumber yield 2Y resmi per negara:
-  US  → FRED (St. Louis Fed)
-  EU  → ECB Data API
-  GB  → Bank of England
-  CA  → Bank of Canada Valet API
-  AU  → RBA Statistical Tables
-  NZ  → RBNZ Data API
-  JP  → Japan MOF
-  CH  → SNB Data Portal
-  CN  → investing.com scrape (fallback hardcode)
+FX YIELD SPREAD BOT — TELEGRAM
+Group: PETILASAN | Topic: Valuasi (Thread ID: 7)
 """
 
-import os, time, threading, logging, requests, schedule
+import os, time, threading, logging, requests, schedule, re
 from datetime import datetime, timedelta
 
-# ──────────────────────────────────────────
-# KONFIGURASI
-# ──────────────────────────────────────────
 TOKEN     = os.environ.get("BOT_TOKEN",     "8752357076:AAHVDQckEFwiRafaUfduHTOLwH5IC6A7fE4")
 CHAT_ID   = os.environ.get("CHAT_ID",      "-1003890278221")
 THREAD_ID = int(os.environ.get("THREAD_ID",  "7"))
@@ -35,249 +16,285 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 log = logging.getLogger(__name__)
 
 # ──────────────────────────────────────────
-# FALLBACK YIELD (update manual berkala)
-# Terakhir update: 12 Mei 2026
+# FALLBACK YIELDS (update berkala)
 # ──────────────────────────────────────────
-YIELDS_FALLBACK = {
-    "US": 3.93,
-    "EU": 2.05,
-    "GB": 4.10,
-    "JP": 0.35,
-    "AU": 3.85,
-    "NZ": 3.60,
-    "CA": 2.90,
-    "CH": -0.25,
-    "CN": 1.50,
+FALLBACK = {
+    "1Y": {"US":4.82,"EU":2.10,"GB":4.52,"JP":0.60,"AU":3.80,"NZ":3.55,"CA":3.10,"CH":0.25,"CN":1.40},
+    "2Y": {"US":3.93,"EU":2.05,"GB":4.10,"JP":0.35,"AU":3.85,"NZ":3.60,"CA":2.90,"CH":-0.25,"CN":1.50},
+    "10Y":{"US":4.37,"EU":2.65,"GB":4.65,"JP":1.50,"AU":4.35,"NZ":4.55,"CA":3.40,"CH":0.70,"CN":1.80},
 }
 
-# Simpan yield aktif di memori (bisa diupdate via /updateyield)
-YIELDS = dict(YIELDS_FALLBACK)
-YIELD_UPDATED_AT = "hardcode (belum auto-fetch)"
-YIELD_SOURCES = {}  # catat sumber tiap negara
+# Yield aktif di memori
+YIELDS   = {"1Y": dict(FALLBACK["1Y"]), "2Y": dict(FALLBACK["2Y"]), "10Y": dict(FALLBACK["10Y"])}
+SOURCES  = {"1Y": {}, "2Y": {}, "10Y": {}}
+UPDATED_AT = "hardcode (belum auto-fetch)"
 
 # ──────────────────────────────────────────
-# FETCH YIELD — SUMBER RESMI PER NEGARA
+# FRED — US (1Y, 2Y, 10Y)
 # ──────────────────────────────────────────
+FRED_SERIES = {"1Y": "DGS1", "2Y": "DGS2", "10Y": "DGS10"}
 
-def fetch_us() -> float | None:
-    """US 2Y — FRED (St. Louis Fed) — tidak perlu API key"""
+def fetch_fred(series_id: str) -> float | None:
     try:
         r = requests.get(
-            "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS2",
-            headers={"User-Agent": "Mozilla/5.0"},
-            timeout=10
-        )
+            f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}",
+            headers={"User-Agent": "Mozilla/5.0"}, timeout=12)
         if r.status_code == 200:
-            lines = [l for l in r.text.strip().splitlines() if not l.startswith("DATE") and "." in l]
-            if lines:
-                val = float(lines[-1].split(",")[1])
-                return round(val, 2)
+            lines = [l for l in r.text.strip().splitlines()
+                     if not l.startswith("DATE") and "," in l]
+            # Ambil baris valid terbaru (skip ".")
+            for line in reversed(lines):
+                val_str = line.split(",")[1].strip()
+                if val_str and val_str != ".":
+                    return round(float(val_str), 2)
     except Exception as e:
-        log.debug(f"FRED US error: {e}")
+        log.debug(f"FRED {series_id}: {e}")
     return None
 
-def fetch_eu() -> float | None:
-    """EU 2Y — ECB Data API"""
+# ──────────────────────────────────────────
+# ECB — EU/DE (1Y, 2Y, 10Y)
+# ──────────────────────────────────────────
+ECB_SERIES = {"1Y": "SR_1Y", "2Y": "SR_2Y", "10Y": "SR_10Y"}
+
+def fetch_ecb(maturity: str) -> float | None:
     try:
-        url = "https://data-api.ecb.europa.eu/service/data/YC/B.U2.EUR.4F.G_N_A.SV_C_YM.SR_2Y?format=csvdata&lastNObservations=1"
-        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        series = ECB_SERIES[maturity]
+        url = (f"https://data-api.ecb.europa.eu/service/data/"
+               f"YC/B.U2.EUR.4F.G_N_A.SV_C_YM.{series}"
+               f"?format=csvdata&lastNObservations=5")
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=12)
         if r.status_code == 200:
-            lines = [l for l in r.text.strip().splitlines() if l and not l.startswith("KEY")]
-            if lines:
-                val = float(lines[-1].split(",")[-1])
-                return round(val, 2)
+            lines = r.text.strip().splitlines()
+            # Cari header untuk tahu kolom OBS_VALUE
+            header = lines[0].split(",") if lines else []
+            obs_idx = next((i for i, h in enumerate(header)
+                           if "OBS_VALUE" in h.upper()), -1)
+            if obs_idx == -1:
+                obs_idx = len(header) - 1
+            for line in reversed(lines[1:]):
+                parts = line.split(",")
+                if len(parts) > obs_idx:
+                    val_str = parts[obs_idx].strip()
+                    if val_str and val_str not in ("", "NaN", "na"):
+                        val = float(val_str)
+                        if val != 0.0:
+                            return round(val, 2)
     except Exception as e:
-        log.debug(f"ECB EU error: {e}")
+        log.debug(f"ECB {maturity}: {e}")
     return None
 
-def fetch_gb() -> float | None:
-    """GB 2Y — Bank of England IADB"""
+# ──────────────────────────────────────────
+# BANK OF ENGLAND — GB
+# ──────────────────────────────────────────
+BOE_SERIES = {"1Y": "IUDMNZC1", "2Y": "IUDMNZC2", "10Y": "IUDMNZC10"}
+
+def fetch_boe(series: str) -> float | None:
     try:
-        today = datetime.now().strftime("%d/%b/%Y")
-        month_ago = (datetime.now() - timedelta(days=30)).strftime("%d/%b/%Y")
-        url = (
-            "https://www.bankofengland.co.uk/boeapps/database/_iadb-FromShowColumns.asp"
-            f"?Travel=NIxIRx&FromSeries=1&ToSeries=50&DAT=RNG"
-            f"&FD={month_ago}&TD={today}&FNY=&CSVF=TT&html.x=66&html.y=26&C=BLC&Filter=N"
-        )
-        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+        url = (f"https://www.bankofengland.co.uk/boeapps/database/fromshowcolumns.asp"
+               f"?Travel=NIxIRx&FromSeries=1&ToSeries=50&DAT=RNG"
+               f"&FD=01/Jan/2025&TD=01/Jan/2027&FNY=&CSVF=TT"
+               f"&html.x=66&html.y=26&C={series}&Filter=N")
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=12)
         if r.status_code == 200 and "," in r.text:
-            lines = [l for l in r.text.strip().splitlines() if l and not l.startswith("Date")]
-            if lines:
-                parts = lines[-1].split(",")
-                val = float(parts[1]) if len(parts) > 1 else None
-                return round(val, 2) if val else None
+            lines = [l for l in r.text.strip().splitlines()
+                     if l and not l.startswith("Date")]
+            for line in reversed(lines):
+                parts = line.split(",")
+                if len(parts) >= 2:
+                    val_str = parts[1].strip()
+                    if val_str and val_str != "":
+                        return round(float(val_str), 2)
     except Exception as e:
-        log.debug(f"BoE GB error: {e}")
+        log.debug(f"BoE {series}: {e}")
     return None
 
-def fetch_ca() -> float | None:
-    """CA 2Y — Bank of Canada Valet API"""
+# ──────────────────────────────────────────
+# BANK OF CANADA — CA
+# ──────────────────────────────────────────
+BOC_SERIES = {"1Y": "V39051", "2Y": "V39054", "10Y": "V39063"}
+
+def fetch_boc(series: str) -> float | None:
     try:
-        # V39054 = Canada 2Y Government Bond Yield
         r = requests.get(
-            "https://www.bankofcanada.ca/valet/observations/V39054/json?recent=5",
-            headers={"User-Agent": "Mozilla/5.0"},
-            timeout=10
-        )
+            f"https://www.bankofcanada.ca/valet/observations/{series}/json?recent=5",
+            headers={"User-Agent": "Mozilla/5.0"}, timeout=12)
         if r.status_code == 200:
             data = r.json()
-            obs = data.get("observations", [])
-            for o in reversed(obs):
-                v = o.get("V39054", {}).get("v")
+            for obs in reversed(data.get("observations", [])):
+                v = obs.get(series, {}).get("v", "")
                 if v and v != "":
                     return round(float(v), 2)
     except Exception as e:
-        log.debug(f"BoC CA error: {e}")
+        log.debug(f"BoC {series}: {e}")
     return None
 
-def fetch_au() -> float | None:
-    """AU 2Y — RBA Statistical Tables F2"""
+# ──────────────────────────────────────────
+# RBA — AU
+# ──────────────────────────────────────────
+RBA_COL = {"1Y": "1 year", "2Y": "2 year", "10Y": "10 year"}
+
+def fetch_rba(maturity: str) -> float | None:
     try:
         r = requests.get(
             "https://www.rba.gov.au/statistics/tables/csv/f2-data.csv",
-            headers={"User-Agent": "Mozilla/5.0"},
-            timeout=15
-        )
+            headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
         if r.status_code == 200:
             lines = r.text.strip().splitlines()
-            # Cari kolom "2 year" atau "2-year"
-            header = None
             col_idx = None
+            data_start = 0
+            target = RBA_COL[maturity].lower()
             for i, line in enumerate(lines):
-                if "2 year" in line.lower() or "2-year" in line.lower():
+                low = line.lower()
+                if target in low:
                     parts = line.split(",")
                     for j, p in enumerate(parts):
-                        if "2" in p and "year" in p.lower():
+                        if target in p.lower():
                             col_idx = j
-                            header = i
+                            data_start = i + 2
                             break
-                    break
+                    if col_idx is not None:
+                        break
             if col_idx is not None:
-                data_lines = [l for l in lines[header+2:] if l.strip() and l.split(",")[0].strip()]
-                if data_lines:
-                    val = data_lines[-1].split(",")[col_idx].strip()
-                    return round(float(val), 2)
+                for line in reversed(lines[data_start:]):
+                    parts = line.split(",")
+                    if len(parts) > col_idx:
+                        val_str = parts[col_idx].strip()
+                        if val_str and val_str != "":
+                            return round(float(val_str), 2)
     except Exception as e:
-        log.debug(f"RBA AU error: {e}")
+        log.debug(f"RBA {maturity}: {e}")
     return None
 
-def fetch_nz() -> float | None:
-    """NZ 2Y — RBNZ Data API"""
+# ──────────────────────────────────────────
+# RBNZ — NZ
+# ──────────────────────────────────────────
+def fetch_rbnz(maturity: str) -> float | None:
     try:
         r = requests.get(
             "https://www.rbnz.govt.nz/api/indicatorsdata/b2?type=json",
-            headers={"User-Agent": "Mozilla/5.0"},
-            timeout=10
-        )
+            headers={"User-Agent": "Mozilla/5.0"}, timeout=12)
         if r.status_code == 200:
             data = r.json()
-            series = data.get("series", [])
-            for s in series:
-                if "2" in str(s.get("name", "")):
+            mat_num = maturity.replace("Y", "")
+            for s in data.get("series", []):
+                name = str(s.get("name", ""))
+                if mat_num in name and "year" in name.lower():
                     obs = s.get("observations", [])
                     if obs:
                         val = obs[-1].get("value")
                         if val is not None:
                             return round(float(val), 2)
     except Exception as e:
-        log.debug(f"RBNZ NZ error: {e}")
+        log.debug(f"RBNZ {maturity}: {e}")
     return None
 
-def fetch_jp() -> float | None:
-    """JP 2Y — Japan MOF (Ministry of Finance)"""
+# ──────────────────────────────────────────
+# JAPAN MOF — JP
+# ──────────────────────────────────────────
+def fetch_mof(maturity: str) -> float | None:
     try:
         r = requests.get(
-            "https://www.mof.go.jp/english/jgbs/reference/interest_rate/index.htm",
-            headers={"User-Agent": "Mozilla/5.0"},
-            timeout=10
-        )
+            "https://www.mof.go.jp/english/jgbs/reference/interest_rate/jgbcme.csv",
+            headers={"User-Agent": "Mozilla/5.0"}, timeout=12)
         if r.status_code == 200:
-            # Parse tabel dari HTML
-            import re
-            # Cari angka yield 2Y dari tabel MOF
-            matches = re.findall(r'2-year.*?(\d+\.\d+)', r.text[:5000], re.DOTALL)
-            if matches:
-                return round(float(matches[0]), 2)
+            lines = r.text.strip().splitlines()
+            header = lines[0].split(",") if lines else []
+            target = maturity.replace("Y", "Y").lower()
+            col_idx = None
+            for i, h in enumerate(header):
+                if target in h.lower().replace(" ", ""):
+                    col_idx = i
+                    break
+            if col_idx and len(lines) > 1:
+                parts = lines[-1].split(",")
+                if len(parts) > col_idx:
+                    val_str = parts[col_idx].strip()
+                    if val_str:
+                        return round(float(val_str), 2)
     except Exception as e:
-        log.debug(f"MOF JP error: {e}")
+        log.debug(f"MOF {maturity}: {e}")
     return None
 
-def fetch_ch() -> float | None:
-    """CH 2Y — SNB Data Portal"""
+# ──────────────────────────────────────────
+# SNB — CH
+# ──────────────────────────────────────────
+SNB_SERIES = {"1Y": "rendoblim/CHF/D1", "2Y": "rendoblim/CHF/D2", "10Y": "rendoblim/CHF/D10"}
+
+def fetch_snb(maturity: str) -> float | None:
     try:
+        series = SNB_SERIES.get(maturity)
+        if not series:
+            return None
         r = requests.get(
-            "https://data.snb.ch/api/serie/rendoblim/CHF/D2/json?lastNObservations=5",
-            headers={"User-Agent": "Mozilla/5.0"},
-            timeout=10
-        )
+            f"https://data.snb.ch/api/serie/{series}/json?lastNObservations=5",
+            headers={"User-Agent": "Mozilla/5.0"}, timeout=12)
         if r.status_code == 200:
             data = r.json()
             obs = data.get("data", {}).get("observations", [])
-            if obs:
-                val = obs[-1].get("value")
-                return round(float(val), 2) if val is not None else None
+            for o in reversed(obs):
+                val = o.get("value")
+                if val is not None:
+                    return round(float(val), 2)
     except Exception as e:
-        log.debug(f"SNB CH error: {e}")
+        log.debug(f"SNB {maturity}: {e}")
     return None
 
-def fetch_cn() -> float | None:
-    """CN 2Y — China Bond (chinabond.com.cn)"""
+# ──────────────────────────────────────────
+# CHINABOND — CN
+# ──────────────────────────────────────────
+CN_TERM = {"1Y": "1", "2Y": "2", "10Y": "10"}
+
+def fetch_cn(maturity: str) -> float | None:
     try:
         today = datetime.now().strftime("%Y%m%d")
         r = requests.get(
-            f"https://yield.chinabond.com.cn/cbweb-czb-web/czb/historyQuery?workTime={today}&locale=en_US",
-            headers={"User-Agent": "Mozilla/5.0", "Referer": "https://yield.chinabond.com.cn/"},
-            timeout=10
-        )
+            f"https://yield.chinabond.com.cn/cbweb-czb-web/czb/historyQuery"
+            f"?workTime={today}&locale=en_US",
+            headers={"User-Agent": "Mozilla/5.0",
+                     "Referer": "https://yield.chinabond.com.cn/"}, timeout=12)
         if r.status_code == 200:
             data = r.json()
+            target = CN_TERM[maturity]
             for item in data:
-                if str(item.get("term", "")) == "2":
+                if str(item.get("term", "")) == target:
                     return round(float(item.get("yield", 0)), 2)
     except Exception as e:
-        log.debug(f"ChinaBond CN error: {e}")
+        log.debug(f"ChinaBond {maturity}: {e}")
     return None
 
-# Map negara ke fungsi fetch
-FETCH_FUNCS = {
-    "US": fetch_us,
-    "EU": fetch_eu,
-    "GB": fetch_gb,
-    "CA": fetch_ca,
-    "AU": fetch_au,
-    "NZ": fetch_nz,
-    "JP": fetch_jp,
-    "CH": fetch_ch,
-    "CN": fetch_cn,
-}
+# ──────────────────────────────────────────
+# MASTER FETCH — semua negara semua tenor
+# ──────────────────────────────────────────
+def get_yields_auto():
+    global YIELDS, SOURCES, UPDATED_AT
+    log.info("Auto-fetch yield dari sumber resmi...")
 
-def get_yields_auto() -> dict:
-    """Fetch yield dari sumber resmi. Fallback ke hardcode jika gagal."""
-    global YIELDS, YIELD_UPDATED_AT, YIELD_SOURCES
-    log.info("Mengambil yield 2Y dari sumber resmi bank sentral...")
-    new_yields = {}
-    new_sources = {}
-    used_fallback = []
+    FETCH = {
+        "US":  {"1Y": lambda: fetch_fred("DGS1"),  "2Y": lambda: fetch_fred("DGS2"),  "10Y": lambda: fetch_fred("DGS10")},
+        "EU":  {"1Y": lambda: fetch_ecb("1Y"),      "2Y": lambda: fetch_ecb("2Y"),      "10Y": lambda: fetch_ecb("10Y")},
+        "GB":  {"1Y": lambda: fetch_boe("IUDMNZC1"),"2Y": lambda: fetch_boe("IUDMNZC2"),"10Y": lambda: fetch_boe("IUDMNZC10")},
+        "CA":  {"1Y": lambda: fetch_boc("V39051"),  "2Y": lambda: fetch_boc("V39054"),  "10Y": lambda: fetch_boc("V39063")},
+        "AU":  {"1Y": lambda: fetch_rba("1Y"),      "2Y": lambda: fetch_rba("2Y"),      "10Y": lambda: fetch_rba("10Y")},
+        "NZ":  {"1Y": lambda: fetch_rbnz("1Y"),     "2Y": lambda: fetch_rbnz("2Y"),     "10Y": lambda: fetch_rbnz("10Y")},
+        "JP":  {"1Y": lambda: fetch_mof("1Y"),      "2Y": lambda: fetch_mof("2Y"),      "10Y": lambda: fetch_mof("10Y")},
+        "CH":  {"1Y": lambda: fetch_snb("1Y"),      "2Y": lambda: fetch_snb("2Y"),      "10Y": lambda: fetch_snb("10Y")},
+        "CN":  {"1Y": lambda: fetch_cn("1Y"),        "2Y": lambda: fetch_cn("2Y"),        "10Y": lambda: fetch_cn("10Y")},
+    }
 
-    for country, func in FETCH_FUNCS.items():
-        val = func()
-        if val is not None and -5 < val < 25:  # sanity check
-            new_yields[country] = val
-            new_sources[country] = "auto"
-            log.info(f"  {country}: {val}% [auto]")
-        else:
-            new_yields[country] = YIELDS_FALLBACK.get(country, 0.0)
-            new_sources[country] = "fallback"
-            used_fallback.append(country)
-            log.warning(f"  {country}: gagal — pakai fallback {new_yields[country]}%")
+    for country, tenors in FETCH.items():
+        for tenor, func in tenors.items():
+            val = func()
+            if val is not None and -5 < val < 25:
+                YIELDS[tenor][country] = val
+                SOURCES[tenor][country] = "auto"
+                log.info(f"  {country} {tenor}: {val}% [auto]")
+            else:
+                YIELDS[tenor][country] = FALLBACK[tenor].get(country, 0.0)
+                SOURCES[tenor][country] = "fallback"
+                log.warning(f"  {country} {tenor}: gagal — fallback {YIELDS[tenor][country]}%")
 
-    YIELDS = new_yields
-    YIELD_SOURCES = new_sources
-    YIELD_UPDATED_AT = datetime.now().strftime("%d %b %Y %H:%M WIB")
-    if used_fallback:
-        log.info(f"Fallback dipakai: {used_fallback}")
-    return YIELDS
+    UPDATED_AT = datetime.now().strftime("%d %b %Y %H:%M WIB")
+    log.info(f"Yield update selesai: {UPDATED_AT}")
 
 # ──────────────────────────────────────────
 # 31 PAIR FX
@@ -313,7 +330,7 @@ def get_all_fx() -> dict:
             rates_usd = data["rates"]
             rates_usd["USD"] = 1.0
     except Exception as e:
-        log.error(f"fxratesapi error: {e}")
+        log.error(f"fxratesapi: {e}")
     if not rates_usd:
         try:
             r2 = requests.get("https://open.er-api.com/v6/latest/USD", timeout=15)
@@ -322,30 +339,29 @@ def get_all_fx() -> dict:
                 rates_usd = data2["rates"]
                 rates_usd["USD"] = 1.0
         except Exception as e2:
-            log.error(f"er-api error: {e2}")
-
-    fx_prices = {}
-    for pair, _, _, base_cur, quote_cur in FX_PAIRS:
+            log.error(f"er-api: {e2}")
+    fx = {}
+    for pair, _, _, b, q in FX_PAIRS:
         try:
-            b = "CNY" if base_cur == "CNH" else base_cur
-            q = "CNY" if quote_cur == "CNH" else quote_cur
-            if b == "USD":
-                price = rates_usd.get(q)
-            elif q == "USD":
-                rate = rates_usd.get(b)
+            bc = "CNY" if b == "CNH" else b
+            qc = "CNY" if q == "CNH" else q
+            if bc == "USD": price = rates_usd.get(qc)
+            elif qc == "USD":
+                rate = rates_usd.get(bc)
                 price = 1/rate if rate else None
             else:
-                rb, rq = rates_usd.get(b), rates_usd.get(q)
+                rb, rq = rates_usd.get(bc), rates_usd.get(qc)
                 price = rq/rb if (rb and rq) else None
-            fx_prices[pair] = price
+            fx[pair] = price
         except:
-            fx_prices[pair] = None
-    return fx_prices
+            fx[pair] = None
+    return fx
 
-def calculate(fx_prices: dict) -> list:
+def calculate(fx_prices: dict, tenor: str = "2Y") -> list:
     results = []
+    yields = YIELDS[tenor]
     for pair, base, quote, _, _ in FX_PAIRS:
-        yb, yq, fx = YIELDS.get(base), YIELDS.get(quote), fx_prices.get(pair)
+        yb, yq, fx = yields.get(base), yields.get(quote), fx_prices.get(pair)
         if yb is None or yq is None or fx is None:
             continue
         spread = yb - yq
@@ -355,16 +371,16 @@ def calculate(fx_prices: dict) -> list:
         results.append({"pair": pair, "status": status, "diff": diff_pct})
     return results
 
-def format_msg(results: list) -> str:
+def format_valuation(results: list, tenor: str = "2Y") -> str:
     now = datetime.now().strftime("%d %b %Y %H:%M WIB")
     over  = [r for r in results if r["status"] == "OVERVALUED"]
     under = [r for r in results if r["status"] == "UNDERVALUED"]
     fair  = [r for r in results if r["status"] == "FAIR VALUE"]
-    auto_count = sum(1 for v in YIELD_SOURCES.values() if v == "auto")
+    auto_count = sum(1 for v in SOURCES[tenor].values() if v == "auto")
     lines = [
-        "📊 *YIELD SPREAD FX VALUATION*",
-        f"🕐 _{now}_ | Tenor: 2Y",
-        f"📡 _Yield: {auto_count}/9 auto | Update: {YIELD_UPDATED_AT}_",
+        f"📊 *YIELD SPREAD FX VALUATION — {tenor}*",
+        f"🕐 _{now}_",
+        f"📡 _Yield: {auto_count}/9 auto | {UPDATED_AT}_",
         "━━━━━━━━━━━━━━━━━━━━━━",
     ]
     if over:
@@ -383,6 +399,35 @@ def format_msg(results: list) -> str:
               f"Total: {len(results)} pair | ⚠️ Bukan rekomendasi investasi"]
     return "\n".join(lines)
 
+def format_tenor_table() -> str:
+    """Tampilkan tabel yield 1Y, 2Y, 10Y semua negara."""
+    lines = [
+        "📈 *YIELD PER TENOR — SEMUA NEGARA*",
+        f"_Update: {UPDATED_AT}_\n",
+        "`Negara  | 1Y     | 2Y     | 10Y`",
+        "`--------|--------|--------|--------`",
+    ]
+    countries = ["US","EU","GB","CA","AU","NZ","JP","CH","CN"]
+    flags = {"US":"🇺🇸","EU":"🇩🇪","GB":"🇬🇧","CA":"🇨🇦","AU":"🇦🇺","NZ":"🇳🇿","JP":"🇯🇵","CH":"🇨🇭","CN":"🇨🇳"}
+    for c in countries:
+        y1  = YIELDS["1Y"].get(c, 0)
+        y2  = YIELDS["2Y"].get(c, 0)
+        y10 = YIELDS["10Y"].get(c, 0)
+        s1  = SOURCES["1Y"].get(c, "?")
+        s2  = SOURCES["2Y"].get(c, "?")
+        s10 = SOURCES["10Y"].get(c, "?")
+        icon1  = "📡" if s1=="auto"  else "📌"
+        icon2  = "📡" if s2=="auto"  else "📌"
+        icon10 = "📡" if s10=="auto" else "📌"
+        lines.append(
+            f"{flags[c]} `{c}` : {icon1}{y1:+.2f}% | {icon2}{y2:+.2f}% | {icon10}{y10:+.2f}%"
+        )
+    lines.append("\n📡=auto | 📌=fallback")
+    return "\n".join(lines)
+
+# ──────────────────────────────────────────
+# TELEGRAM
+# ──────────────────────────────────────────
 def send_message(text, chat_id=CHAT_ID, thread_id=THREAD_ID):
     try:
         requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", json={
@@ -390,7 +435,7 @@ def send_message(text, chat_id=CHAT_ID, thread_id=THREAD_ID):
             "parse_mode": "Markdown", "message_thread_id": thread_id,
         }, timeout=15)
     except Exception as e:
-        log.error(f"send_message error: {e}")
+        log.error(f"send_message: {e}")
 
 def get_updates(offset=0):
     try:
@@ -400,67 +445,74 @@ def get_updates(offset=0):
     except:
         return []
 
-def run_yield(chat_id=CHAT_ID, thread_id=THREAD_ID):
-    send_message("⏳ Mengambil data yield & FX dari sumber resmi...\nHarap tunggu ~20 detik.", chat_id, thread_id)
+def run_yield(chat_id=CHAT_ID, thread_id=THREAD_ID, tenor="2Y"):
+    send_message(f"⏳ Mengambil data yield {tenor} & FX...\nHarap tunggu ~20 detik.", chat_id, thread_id)
     try:
         get_yields_auto()
-        fx_prices = get_all_fx()
-        results = calculate(fx_prices)
+        fx = get_all_fx()
+        results = calculate(fx, tenor)
         if not results:
-            send_message("⚠️ Gagal ambil data FX. Coba lagi.", chat_id, thread_id)
+            send_message("⚠️ Gagal ambil data FX.", chat_id, thread_id)
             return
-        send_message(format_msg(results), chat_id, thread_id)
+        send_message(format_valuation(results, tenor), chat_id, thread_id)
     except Exception as e:
-        log.error(f"run_yield error: {e}")
         send_message(f"❌ Error: {e}", chat_id, thread_id)
 
 def handle_updateyield(text, chat_id, thread_id):
-    global YIELDS, YIELD_UPDATED_AT, YIELD_SOURCES
+    global YIELDS, SOURCES, UPDATED_AT
+    # Format: /updateyield 2Y US:3.93 EU:2.05 ...
+    # atau:   /updateyield US:3.93 EU:2.05 ... (default 2Y)
     parts = text.replace("/updateyield", "").strip().split()
-    updated = {}
-    errors = []
+    tenor = "2Y"
+    if parts and parts[0] in ("1Y","2Y","10Y"):
+        tenor = parts[0]
+        parts = parts[1:]
+    updated, errors = {}, []
     for part in parts:
         try:
             code, val = part.split(":")
             code = code.upper().strip()
-            if code not in YIELDS:
+            if code not in YIELDS[tenor]:
                 errors.append(f"{code} tidak dikenal")
                 continue
-            YIELDS[code] = float(val)
-            YIELD_SOURCES[code] = "manual"
+            YIELDS[tenor][code] = float(val)
+            SOURCES[tenor][code] = "manual"
             updated[code] = float(val)
         except:
             errors.append(f"Format salah: {part}")
     if updated:
-        YIELD_UPDATED_AT = datetime.now().strftime("%d %b %Y %H:%M WIB")
-        lines = ["✅ *Yield diupdate manual!*\n"]
-        for k, v in YIELDS.items():
-            src = YIELD_SOURCES.get(k, "?")
-            icon = "🔄" if k in updated else ("📡" if src == "auto" else "📌")
+        UPDATED_AT = datetime.now().strftime("%d %b %Y %H:%M WIB")
+        lines = [f"✅ *Yield {tenor} diupdate manual!*\n"]
+        for k, v in YIELDS[tenor].items():
+            src = SOURCES[tenor].get(k, "?")
+            icon = "🔄" if k in updated else ("📡" if src=="auto" else "📌")
             lines.append(f"{icon} `{k}` : {v:.2f}%")
-        lines.append(f"\n🕐 {YIELD_UPDATED_AT}")
         if errors:
-            lines.append(f"⚠️ Error: {', '.join(errors)}")
+            lines.append(f"\n⚠️ Error: {', '.join(errors)}")
         send_message("\n".join(lines), chat_id, thread_id)
     else:
         send_message(
             "❌ Format salah.\n\nContoh:\n"
-            "`/updateyield US:3.93 EU:2.05 GB:4.10 JP:0.35 AU:3.85 NZ:3.60 CA:2.90 CH:-0.25 CN:1.50`",
-            chat_id, thread_id)
+            "`/updateyield US:3.93 EU:2.05`\n"
+            "`/updateyield 10Y US:4.37 JP:1.50`", chat_id, thread_id)
 
+# ──────────────────────────────────────────
+# SCHEDULER
+# ──────────────────────────────────────────
 def start_scheduler():
     send_time = f"{HOUR:02d}:{MINUTE:02d}"
     schedule.every().day.at(send_time).do(run_yield)
-    # Auto-fetch yield tiap hari jam 00:30 UTC
     schedule.every().day.at("00:30").do(get_yields_auto)
-    log.info(f"Scheduler: kirim {send_time} UTC | auto-fetch yield 00:30 UTC")
+    log.info(f"Scheduler: kirim {send_time} UTC | auto-fetch 00:30 UTC")
     while True:
         schedule.run_pending()
         time.sleep(30)
 
+# ──────────────────────────────────────────
+# POLLING
+# ──────────────────────────────────────────
 def polling_loop():
     log.info("Bot berjalan...")
-    # Auto-fetch yield saat startup
     threading.Thread(target=get_yields_auto, daemon=True).start()
     offset = 0
     while True:
@@ -478,24 +530,50 @@ def polling_loop():
                 send_message(
                     "👋 *ValuasiFX Bot*\n\n"
                     "📌 *Command:*\n"
-                    "/yield — Cek valuasi 31 pair FX\n"
-                    "/yields — Lihat yield 2Y saat ini\n"
+                    "/yield — Valuasi 31 pair (tenor 2Y)\n"
+                    "/yield1y — Valuasi pakai tenor 1Y\n"
+                    "/yield10y — Valuasi pakai tenor 10Y\n"
+                    "/yields — Yield 2Y saat ini\n"
+                    "/tenor — Tabel yield 1Y, 2Y, 10Y semua negara\n"
+                    "/refreshyield — Fetch ulang yield dari bank sentral\n"
                     "/updateyield — Update yield manual\n"
                     "/help — Bantuan\n\n"
-                    "📡 Yield auto-fetch dari bank sentral resmi\n"
-                    "⏰ Auto-kirim 08:00 WIB", chat_id, THREAD_ID)
+                    "⏰ Auto-kirim 08:00 WIB | 📡 Auto-fetch harian",
+                    chat_id, THREAD_ID)
+
+            elif text.startswith("/yield1y"):
+                threading.Thread(target=run_yield, args=(chat_id, THREAD_ID, "1Y"), daemon=True).start()
+
+            elif text.startswith("/yield10y"):
+                threading.Thread(target=run_yield, args=(chat_id, THREAD_ID, "10Y"), daemon=True).start()
 
             elif text.startswith("/yield") and not text.startswith("/yields") and not text.startswith("/updateyield"):
-                threading.Thread(target=run_yield, args=(chat_id, THREAD_ID), daemon=True).start()
+                threading.Thread(target=run_yield, args=(chat_id, THREAD_ID, "2Y"), daemon=True).start()
 
             elif text.startswith("/yields"):
-                lines = [f"📈 *YIELD 2Y SAAT INI*\n_Update: {YIELD_UPDATED_AT}_\n"]
-                for k, v in YIELDS.items():
-                    src = YIELD_SOURCES.get(k, "?")
-                    icon = "📡" if src == "auto" else ("🔄" if src == "manual" else "📌")
+                lines = [f"📈 *YIELD 2Y SAAT INI*\n_Update: {UPDATED_AT}_\n"]
+                for k, v in YIELDS["2Y"].items():
+                    src = SOURCES["2Y"].get(k, "?")
+                    icon = "📡" if src=="auto" else ("🔄" if src=="manual" else "📌")
                     lines.append(f"{icon} `{k}` : {v:.2f}%")
                 lines.append("\n📡=auto | 🔄=manual | 📌=fallback")
                 send_message("\n".join(lines), chat_id, THREAD_ID)
+
+            elif text.startswith("/tenor"):
+                send_message(format_tenor_table(), chat_id, THREAD_ID)
+
+            elif text.startswith("/refreshyield"):
+                send_message("🔄 Fetching yield dari semua bank sentral...\nHarap tunggu ~30 detik.", chat_id, THREAD_ID)
+                def do_refresh(cid, tid):
+                    get_yields_auto()
+                    auto = sum(1 for t in SOURCES.values() for s in t.values() if s=="auto")
+                    total = len(SOURCES) * 9
+                    send_message(
+                        f"✅ *Yield berhasil di-refresh!*\n"
+                        f"📡 Auto: {auto}/{total} | 📌 Fallback: {total-auto}/{total}\n"
+                        f"🕐 {UPDATED_AT}\n\n"
+                        f"Ketik /tenor untuk lihat semua nilai.", cid, tid)
+                threading.Thread(target=do_refresh, args=(chat_id, THREAD_ID), daemon=True).start()
 
             elif text.startswith("/updateyield"):
                 handle_updateyield(text, chat_id, THREAD_ID)
@@ -504,18 +582,20 @@ def polling_loop():
                 send_message(
                     "📖 *Cara Kerja Bot*\n\n"
                     "*Formula:*\n`Spread = Yield Base - Yield Quote`\n"
-                    "`Fair Value = Harga FX ÷ (1 + Spread%)`\n\n"
-                    "*Yield auto-fetch dari:*\n"
-                    "🇺🇸 US → FRED (St Louis Fed)\n"
-                    "🇪🇺 EU → ECB Data API\n"
-                    "🇬🇧 GB → Bank of England\n"
-                    "🇨🇦 CA → Bank of Canada\n"
-                    "🇦🇺 AU → RBA\n"
-                    "🇳🇿 NZ → RBNZ\n"
-                    "🇯🇵 JP → Japan MOF\n"
-                    "🇨🇭 CH → SNB\n"
-                    "🇨🇳 CN → ChinaBond\n\n"
-                    "⚠️ Bukan rekomendasi trading.", chat_id, THREAD_ID)
+                    "`Fair Value = FX ÷ (1 + Spread%)`\n\n"
+                    "*Tenor:*\n"
+                    "/yield → 2Y (default)\n"
+                    "/yield1y → 1Y\n"
+                    "/yield10y → 10Y\n\n"
+                    "*Update yield manual:*\n"
+                    "`/updateyield US:3.93 EU:2.05`\n"
+                    "`/updateyield 10Y US:4.37 JP:1.50`\n\n"
+                    "*Sumber auto:*\n"
+                    "🇺🇸 FRED | 🇩🇪 ECB | 🇬🇧 BoE\n"
+                    "🇨🇦 BoC | 🇦🇺 RBA | 🇳🇿 RBNZ\n"
+                    "🇯🇵 MOF | 🇨🇭 SNB | 🇨🇳 ChinaBond\n\n"
+                    "⚠️ Bukan rekomendasi trading.",
+                    chat_id, THREAD_ID)
         time.sleep(2)
 
 if __name__ == "__main__":
