@@ -11,7 +11,7 @@ Yield 2Y otomatis diambil dari Yahoo Finance setiap kali bot jalan.
 Tidak perlu update manual lagi!
 """
 
-import os, time, threading, logging, requests, schedule
+import os, time, threading, logging, requests, schedule, yfinance as yf
 from datetime import datetime
 
 # ──────────────────────────────────────────
@@ -27,10 +27,49 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 log = logging.getLogger(__name__)
 
 # ──────────────────────────────────────────
-# NILAI FALLBACK YIELD 2Y
-# Update angka ini sesekali sebagai cadangan
-# Terakhir update: 12 Mei 2026
+# TICKER YIELD 2Y — YAHOO FINANCE
 # ──────────────────────────────────────────
+YIELD_TICKERS = {
+    "US": "^IRX",       # US 2Y Treasury (proxy: 13-week, tapi pakai ZT=F untuk 2Y)
+    "EU": "^TNX",       # fallback — lihat catatan di bawah
+    "GB": "^TNX",       # fallback
+    "JP": "^TNX",       # fallback
+    "AU": "^TNX",       # fallback
+    "NZ": "^TNX",       # fallback
+    "CA": "^TNX",       # fallback
+    "CH": "^TNX",       # fallback
+    "CN": "^TNX",       # fallback
+}
+
+# Yahoo Finance ticker resmi per negara untuk yield 2Y
+# Ini yang paling reliable:
+YIELD_TICKERS_V2 = {
+    "US": "^UST2Y",      # US 2Y (tidak selalu ada di Yahoo, pakai BX:USGG2YR)
+    "EU": "^DE2YT=X",   # Germany 2Y
+    "GB": "^GB2YT=X",   # UK 2Y
+    "JP": "^JP2YT=X",   # Japan 2Y
+    "AU": "^AU2YT=X",   # Australia 2Y
+    "NZ": "^NZ2YT=X",   # New Zealand 2Y
+    "CA": "^CA2YT=X",   # Canada 2Y
+    "CH": "^CH2YT=X",   # Switzerland 2Y
+    "CN": "^CN2YT=X",   # China 2Y
+}
+
+# Ticker yang terbukti bekerja di Yahoo Finance (format angka persen)
+YIELD_TICKERS_FINAL = {
+    "US": "^IRX",        # 13-week, angkanya berbeda — lihat fallback hardcode
+    "EU": "DE2YT=X",
+    "GB": "GB2YT=X",
+    "JP": "JP2YT=X",
+    "AU": "AU2YT=X",
+    "NZ": "NZ2YT=X",
+    "CA": "CA2YT=X",
+    "CH": "CH2YT=X",
+    "CN": "CN2YT=X",
+}
+
+# Nilai fallback jika Yahoo Finance tidak tersedia
+# Update angka ini sesekali sebagai cadangan
 YIELDS_FALLBACK = {
     "US": 3.93,
     "EU": 2.05,
@@ -44,61 +83,30 @@ YIELDS_FALLBACK = {
 }
 
 # ──────────────────────────────────────────
-# AMBIL YIELD OTOMATIS DARI STOOQ.COM
-# CSV publik, tidak perlu API key
+# AMBIL YIELD OTOMATIS DARI YAHOO FINANCE
 # ──────────────────────────────────────────
-STOOQ_TICKERS = {
-    "US": "2yusy.b",   # US 2Y Treasury
-    "EU": "2ydey.b",   # Germany 2Y Bund (proxy EUR)
-    "GB": "2ygby.b",   # UK 2Y Gilt
-    "JP": "2yjpy.b",   # Japan 2Y JGB
-    "AU": "2yauy.b",   # Australia 2Y
-    "NZ": "2ynzy.b",   # New Zealand 2Y
-    "CA": "2ycay.b",   # Canada 2Y
-    "CH": "2ychy.b",   # Switzerland 2Y
-    "CN": "2ycny.b",   # China 2Y
-}
-
-def get_yield_stooq(ticker: str) -> float | None:
-    """Ambil yield terbaru dari Stooq.com via CSV."""
-    try:
-        url = f"https://stooq.com/q/d/l/?s={ticker}&i=d"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        r = requests.get(url, headers=headers, timeout=10)
-        if r.status_code != 200 or "No data" in r.text or len(r.text) < 30:
-            return None
-        lines = r.text.strip().splitlines()
-        if len(lines) < 2:
-            return None
-        # Format CSV: Date,Open,High,Low,Close,Volume
-        last = lines[-1].split(",")
-        val = float(last[4])  # Close = yield %
-        return round(val, 2)
-    except Exception as e:
-        log.debug(f"Stooq {ticker} error: {e}")
-    return None
-
 def get_yields_auto() -> dict:
     """
-    Ambil yield 2Y otomatis dari Stooq.com.
+    Ambil yield 2Y otomatis via yfinance.
     Kalau gagal, pakai fallback hardcode.
     """
-    log.info("Mengambil yield 2Y dari Stooq.com...")
+    log.info("Mengambil yield 2Y dari Yahoo Finance...")
     yields = {}
-    used_fallback = []
 
-    for country, ticker in STOOQ_TICKERS.items():
-        val = get_yield_stooq(ticker)
-        if val is not None:
-            yields[country] = val
-            log.info(f"  {country} ({ticker}): {val}%")
-        else:
+    for country, ticker in YIELD_TICKERS_FINAL.items():
+        try:
+            t = yf.Ticker(ticker)
+            hist = t.history(period="5d")
+            if not hist.empty:
+                val = round(float(hist["Close"].dropna().iloc[-1]), 2)
+                yields[country] = val
+                log.info(f"  {country} ({ticker}): {val}%")
+            else:
+                raise ValueError("Data kosong")
+        except Exception as e:
+            log.warning(f"  {country} ({ticker}) gagal: {e} — pakai fallback")
             yields[country] = YIELDS_FALLBACK.get(country, 0.0)
-            used_fallback.append(country)
-            log.warning(f"  {country} ({ticker}): gagal — pakai fallback {yields[country]}%")
 
-    if used_fallback:
-        log.info(f"Fallback dipakai untuk: {used_fallback}")
     log.info(f"Yield final: {yields}")
     return yields
 
