@@ -360,7 +360,7 @@ def handle_updateyield(text, chat_id, thread_id):
             lines.append(f"{icon} `{k}` : {v:.2f}%")
         if errors:
             lines.append(f"\n⚠️ Error: {', '.join(errors)}")
-        send_message("\n".join(lines), chat_id, thread_id)
+        send_message("\\n".join(lines), chat_id, thread_id)
     else:
         send_message(
             "❌ Format salah.\n\nContoh:\n"
@@ -423,7 +423,7 @@ def polling_loop():
                     icon = "📡" if src=="auto" else ("🔄" if src=="manual" else "📌")
                     lines.append(f"{icon} `{k}` : {v:.2f}%")
                 lines.append("\n📡=auto | 🔄=manual | 📌=fallback")
-                send_message("\n".join(lines), chat_id, THREAD_ID)
+                send_message("\\n".join(lines), chat_id, THREAD_ID)
 
             elif text.startswith("/tenor"):
                 send_message(format_tenor_table(), chat_id, THREAD_ID)
@@ -444,50 +444,36 @@ def polling_loop():
                 handle_updateyield(text, chat_id, THREAD_ID)
 
             elif text.startswith("/debug"):
-                # Debug: lihat yield dan FX yang dipakai untuk USDJPY
                 try:
                     fx = get_all_fx()
-                    y_us = YIELDS["2Y"].get("US", "N/A")
-                    y_jp = YIELDS["2Y"].get("JP", "N/A")
-                    usdjpy = fx.get("USDJPY", "N/A")
-                    eurusd = fx.get("EURUSD", "N/A")
-                    spread = round(float(y_us) - float(y_jp), 2) if isinstance(y_us, float) and isinstance(y_jp, float) else "N/A"
-                    fair = round(float(usdjpy) / (1 + float(spread)/100), 4) if isinstance(usdjpy, float) and spread != "N/A" else "N/A"
-                    diff = round(((float(usdjpy) - float(fair)) / float(fair)) * 100, 2) if fair != "N/A" else "N/A"
-                    msg = (
-                        "🔍 *DEBUG INFO*
-
-"
-                        f"*Yield 2Y:*
-"
-                        f"US: {y_us}% | JP: {y_jp}%
-"
-                        f"Spread US-JP: {spread}%
-
-"
-                        f"*FX Prices:*
-"
-                        f"USDJPY: {usdjpy}
-"
-                        f"EURUSD: {eurusd}
-
-"
-                        f"*Kalkulasi USDJPY:*
-"
-                        f"Fair Value: {fair}
-"
-                        f"Diff: {diff}%
-
-"
-                        f"*Sources 2Y:*
-"
-                        f"US: {SOURCES.get('2Y', {}).get('US', '?')}
-"
-                        f"JP: {SOURCES.get('2Y', {}).get('JP', '?')}"
-                    )
-                    send_message(msg, chat_id, THREAD_ID)
+                    y_us = YIELDS["2Y"].get("US", 0)
+                    y_jp = YIELDS["2Y"].get("JP", 0)
+                    usdjpy = fx.get("USDJPY", 0)
+                    eurusd = fx.get("EURUSD", 0)
+                    src_us = SOURCES.get("2Y", {}).get("US", "?")
+                    src_jp = SOURCES.get("2Y", {}).get("JP", "?")
+                    spread = round(y_us - y_jp, 2)
+                    fair = round(usdjpy / (1 + spread/100), 4) if usdjpy else 0
+                    diff = round(((usdjpy - fair) / fair) * 100, 2) if fair else 0
+                    lines = [
+                        "*DEBUG INFO*",
+                        "",
+                        "*Yield 2Y:*",
+                        "US: " + str(y_us) + "% [" + src_us + "]",
+                        "JP: " + str(y_jp) + "% [" + src_jp + "]",
+                        "Spread: " + str(spread) + "%",
+                        "",
+                        "*FX Prices:*",
+                        "USDJPY: " + str(usdjpy),
+                        "EURUSD: " + str(eurusd),
+                        "",
+                        "*Kalkulasi USDJPY:*",
+                        "Fair Value: " + str(fair),
+                        "Diff: " + str(diff) + "%",
+                    ]
+                    send_message("\n".join(lines), chat_id, THREAD_ID)
                 except Exception as e:
-                    send_message(f"Debug error: {e}", chat_id, THREAD_ID)
+                    send_message("Debug error: " + str(e), chat_id, THREAD_ID)
 
             elif text.startswith("/help"):
                 send_message(
