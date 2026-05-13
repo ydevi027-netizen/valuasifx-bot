@@ -443,6 +443,52 @@ def polling_loop():
             elif text.startswith("/updateyield"):
                 handle_updateyield(text, chat_id, THREAD_ID)
 
+            elif text.startswith("/debug"):
+                # Debug: lihat yield dan FX yang dipakai untuk USDJPY
+                try:
+                    fx = get_all_fx()
+                    y_us = YIELDS["2Y"].get("US", "N/A")
+                    y_jp = YIELDS["2Y"].get("JP", "N/A")
+                    usdjpy = fx.get("USDJPY", "N/A")
+                    eurusd = fx.get("EURUSD", "N/A")
+                    spread = round(float(y_us) - float(y_jp), 2) if isinstance(y_us, float) and isinstance(y_jp, float) else "N/A"
+                    fair = round(float(usdjpy) / (1 + float(spread)/100), 4) if isinstance(usdjpy, float) and spread != "N/A" else "N/A"
+                    diff = round(((float(usdjpy) - float(fair)) / float(fair)) * 100, 2) if fair != "N/A" else "N/A"
+                    msg = (
+                        "🔍 *DEBUG INFO*
+
+"
+                        f"*Yield 2Y:*
+"
+                        f"US: {y_us}% | JP: {y_jp}%
+"
+                        f"Spread US-JP: {spread}%
+
+"
+                        f"*FX Prices:*
+"
+                        f"USDJPY: {usdjpy}
+"
+                        f"EURUSD: {eurusd}
+
+"
+                        f"*Kalkulasi USDJPY:*
+"
+                        f"Fair Value: {fair}
+"
+                        f"Diff: {diff}%
+
+"
+                        f"*Sources 2Y:*
+"
+                        f"US: {SOURCES.get('2Y', {}).get('US', '?')}
+"
+                        f"JP: {SOURCES.get('2Y', {}).get('JP', '?')}"
+                    )
+                    send_message(msg, chat_id, THREAD_ID)
+                except Exception as e:
+                    send_message(f"Debug error: {e}", chat_id, THREAD_ID)
+
             elif text.startswith("/help"):
                 send_message(
                     "📖 *Cara Kerja Bot*\n\n"
