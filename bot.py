@@ -249,27 +249,34 @@ def auto_fetch_yields():
 # ── FX REAL-TIME DARI FINNHUB ────────────────────────────────────
 def get_fx_quote(symbol):
     """Ambil harga FX dan daily change% dari Finnhub."""
+    import time as _time
     try:
-        # Format Finnhub: OANDA:EUR_USD
         sym = symbol[:3] + "_" + symbol[3:]
+        now = int(_time.time())
+        from_ts = now - 7 * 24 * 3600  # 7 hari ke belakang
         r = requests.get(
-            f"https://finnhub.io/api/v1/forex/candle",
+            "https://finnhub.io/api/v1/forex/candle",
             params={
                 "symbol": f"OANDA:{sym}",
                 "resolution": "D",
-                "count": 2,
+                "from": from_ts,
+                "to": now,
                 "token": FINNHUB_KEY
             },
             timeout=10
         )
         if r.status_code == 200:
             data = r.json()
-            closes = data.get("c", [])
-            if len(closes) >= 2:
-                prev = closes[-2]
-                curr = closes[-1]
-                change_pct = ((curr - prev) / prev) * 100
-                return round(curr, 5), round(change_pct, 2)
+            if data.get("s") == "ok":
+                closes = data.get("c", [])
+                if len(closes) >= 2:
+                    prev = closes[-2]
+                    curr = closes[-1]
+                    change_pct = ((curr - prev) / prev) * 100
+                    return round(curr, 5), round(change_pct, 2)
+                elif len(closes) == 1:
+                    return round(closes[-1], 5), 0.0
+            log.debug(f"Finnhub {symbol}: status={data.get('s')} data={str(data)[:100]}")
     except Exception as e:
         log.debug(f"Finnhub {symbol}: {e}")
     return None, None
