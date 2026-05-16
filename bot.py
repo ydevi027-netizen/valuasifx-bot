@@ -1,5 +1,5 @@
-import os, time, threading, logging, requests, schedule
-from datetime import datetime
+import os, time, threading, logging, requests, schedule, json
+from datetime import datetime, timedelta
 
 TOKEN        = os.environ.get("BOT_TOKEN",      "8752357076:AAHVDQckEFwiRafaUfduHTOLwH5IC6A7fE4")
 CHAT_ID      = os.environ.get("CHAT_ID",        "-1003890278221")
@@ -35,6 +35,9 @@ YIELDS = {
 }
 UPDATED_AT = os.environ.get("YIELD_UPDATED_AT", "belum diupdate")
 
+# Simpan harga FX kemarin di memori
+FX_YESTERDAY = {}
+
 FX_PAIRS = [
     ("EURUSD","EU","US"), ("GBPUSD","GB","US"),
     ("AUDUSD","AU","US"), ("NZDUSD","NZ","US"),
@@ -55,37 +58,52 @@ FX_PAIRS = [
     ("CADCHF","CA","CH"),
 ]
 
-def get_fx_rates():
-    """Ambil harga FX dari fxratesapi, fallback ke open.er-api."""
+# ── AMBIL HARGA FX HARI INI ──────────────────────────────────────
+def get_fx_rates(date_str=None):
+    """Ambil harga FX. date_str format: YYYY-MM-DD untuk historical."""
     rates = {}
     try:
-        r = requests.get(
-            "https://api.fxratesapi.com/latest?base=USD"
-            "&currencies=EUR,GBP,AUD,NZD,JPY,CAD,CHF,CNH,CNY,INR",
-            timeout=15)
-        data = r.json()
-        if data.get("rates"):
-            rates = data["rates"]
-            rates["USD"] = 1.0
-            log.info("FX dari fxratesapi OK")
+        if date_str:
+            # Historical dari exchangerate.host
+            r = requests.get(
+                f"https://api.exchangerate.host/{date_str}",
+                params={"base": "USD", "symbols": "EUR,GBP,AUD,NZD,JPY,CAD,CHF,CNY,INR"},
+                timeout=15)
+            data = r.json()
+            if data.get("success") and data.get("rates"):
+                rates = data["rates"]
+                rates["USD"] = 1.0
+                log.info(f"FX historical {date_str} dari exchangerate.host OK")
+        else:
+            # Hari ini dari fxratesapi
+            r = requests.get(
+                "https://api.fxratesapi.com/latest?base=USD"
+                "&currencies=EUR,GBP,AUD,NZD,JPY,CAD,CHF,CNH,CNY,INR",
+                timeout=15)
+            data = r.json()
+            if data.get("rates"):
+                rates = data["rates"]
+                rates["USD"] = 1.0
+                log.info("FX today dari fxratesapi OK")
     except Exception as e:
-        log.warning(f"fxratesapi: {e}")
+        log.warning(f"get_fx_rates: {e}")
 
+    # Fallback ke open.er-api
     if not rates:
         try:
-            r2 = requests.get("https://open.er-api.com/v6/latest/USD", timeout=15)
+            url = f"https://open.er-api.com/v6/{'latest' if not date_str else date_str}/USD"
+            r2 = requests.get(url, timeout=15)
             data2 = r2.json()
-            if data2.get("result") == "success":
+            if data2.get("result") == "success" or data2.get("rates"):
                 rates = data2["rates"]
                 rates["USD"] = 1.0
-                log.info("FX dari open.er-api OK")
+                log.info(f"FX dari open.er-api OK")
         except Exception as e2:
             log.error(f"open.er-api: {e2}")
 
     return rates
 
 def calc_price(pair, rates):
-    """Hitung harga pair dari rates USD-based."""
     b = pair[:3]
     q = pair[3:]
     bc = "CNY" if b == "CNH" else b
@@ -102,66 +120,145 @@ def calc_price(pair, rates):
     except:
         return None
 
-def calculate(rates):
-    """Hitung valuasi: Fair Value berdasarkan yield spread."""
+# ── FETCH HARGA KEMARIN ──────────────────────────────────────────
+def fetch_yesterday_prices():
+    """Ambil harga FX kemarin dan simpan ke memori."""
+    global FX_YESTERDAY
+    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    log.info(f"Fetching harga kemarin {yesterday}...")
+    rates_yday = get_fx_rates(date_str=yesterday)
+    if rates_yday:
+        for pair, _, _ in FX_PAIRS:
+            price = calc_price(pair, rates_yday)
+            if price:
+                FX_YESTERDAY[pair] = price
+        log.info(f"Harga kemarin tersimpan: {len(FX_YESTERDAY)} pair")
+    else:
+        log.warning("Gagal fetch harga kemarin")
+
+# ── KALKULASI METODE A: FX Daily Change% vs Yield Spread% ────────
+def calculate_method_a(rates_today):
+    """
+    Metode A: Pakai perubahan harga FX harian.
+    FX% = (Harga Hari Ini - Harga Kemarin) / Harga Kemarin × 100
+    Yield% = Yield Base - Yield Quote
+    Overvalued jika FX% > Yield%
+    """
     results = []
     for pair, base, quote in FX_PAIRS:
         yb = YIELDS.get(base)
         yq = YIELDS.get(quote)
-        price = calc_price(pair, rates)
+        price_today = calc_price(pair, rates_today)
+        price_yday = FX_YESTERDAY.get(pair)
+
+        if yb is None or yq is None or price_today is None:
+            continue
+
+        yield_spread = round(yb - yq, 2)
+
+        if price_yday and price_yday != 0:
+            fx_change = round(((price_today - price_yday) / price_yday) * 100, 2)
+        else:
+            fx_change = None
+
+        if fx_change is not None:
+            diff = fx_change - yield_spread
+            if diff > 0.3:
+                status = "OVERVALUED"
+            elif diff < -0.3:
+                status = "UNDERVALUED"
+            else:
+                status = "FAIR VALUE"
+        else:
+            # Fallback ke metode B jika tidak ada data kemarin
+            status = "N/A"
+
+        results.append({
+            "pair": pair, "status": status,
+            "fx_pct": fx_change, "yield_pct": yield_spread,
+            "price": price_today
+        })
+    return results
+
+# ── KALKULASI METODE B: Fair Value berdasarkan Yield Spread ──────
+def calculate_method_b(rates_today):
+    """
+    Metode B: Hitung Fair Value dari yield spread.
+    Fair Value = Harga FX / (1 + Spread%)
+    Diff% = (Harga - Fair) / Fair × 100
+    """
+    results = []
+    for pair, base, quote in FX_PAIRS:
+        yb = YIELDS.get(base)
+        yq = YIELDS.get(quote)
+        price = calc_price(pair, rates_today)
+
         if yb is None or yq is None or price is None:
             continue
+
         spread = yb - yq
         fair = price / (1 + spread/100)
-        diff = ((price - fair) / fair) * 100
+        diff = round(((price - fair) / fair) * 100, 2)
         yield_spread = round(spread, 2)
+
         if diff > 0.5:
             status = "OVERVALUED"
         elif diff < -0.5:
             status = "UNDERVALUED"
         else:
             status = "FAIR VALUE"
+
         results.append({
             "pair": pair, "status": status,
-            "diff": round(diff, 2), "spread": yield_spread,
+            "fx_pct": diff, "yield_pct": yield_spread,
             "price": price
         })
     return results
 
-def format_valuation(results):
+# ── FORMAT PESAN ─────────────────────────────────────────────────
+def format_results(results, method="A"):
     now = datetime.now().strftime("%d %b %Y %H:%M WIB")
     over  = [r for r in results if r["status"] == "OVERVALUED"]
     under = [r for r in results if r["status"] == "UNDERVALUED"]
     fair  = [r for r in results if r["status"] == "FAIR VALUE"]
+
+    if method == "A":
+        title = "VALUASI — FX Daily% vs Yield Spread%"
+        header = "Pair       FX%      Yield%"
+    else:
+        title = "VALUASI — Fair Value vs Yield Spread%"
+        header = "Pair       Diff%    Yield%"
+
     lines = [
-        "*YIELD SPREAD FX VALUATION*",
+        f"*{title}*",
         f"_{now}_",
         f"_Yield: {UPDATED_AT}_",
         "━━━━━━━━━━━━━━━━━━━━━━",
     ]
+
     if over:
-        lines.append("\n*🔴 OVERVALUED* — FX > YIELD")
-        lines.append("`Pair      FX%     > Yield%`")
+        lines.append("\n*🔴 OVERVALUED*")
+        lines.append(f"`{header}`")
         for r in over:
-            fx_str = f"{r['diff']:+.2f}%"
-            ys_str = f"{r['spread']:+.2f}%"
-            lines.append(f"`{r['pair']:<8}` {fx_str:>7} `>` {ys_str}")
+            fx = f"{r['fx_pct']:+.2f}%" if r['fx_pct'] is not None else "N/A "
+            lines.append(f"`{r['pair']:<8}  {fx:>7}  >  {r['yield_pct']:+.2f}%`")
+
     if under:
-        lines.append("\n*🟢 UNDERVALUED* — FX < YIELD")
-        lines.append("`Pair      FX%     < Yield%`")
+        lines.append("\n*🟢 UNDERVALUED*")
+        lines.append(f"`{header}`")
         for r in under:
-            fx_str = f"{r['diff']:+.2f}%"
-            ys_str = f"{r['spread']:+.2f}%"
-            lines.append(f"`{r['pair']:<8}` {fx_str:>7} `<` {ys_str}")
+            fx = f"{r['fx_pct']:+.2f}%" if r['fx_pct'] is not None else "N/A "
+            lines.append(f"`{r['pair']:<8}  {fx:>7}  <  {r['yield_pct']:+.2f}%`")
+
     if fair:
-        lines.append("\n*⚪ FAIR VALUE* — FX ≈ YIELD")
-        lines.append("`Pair      FX%     ≈ Yield%`")
+        lines.append("\n*⚪ FAIR VALUE*")
+        lines.append(f"`{header}`")
         for r in fair:
-            fx_str = f"{r['diff']:+.2f}%"
-            ys_str = f"{r['spread']:+.2f}%"
-            lines.append(f"`{r['pair']:<8}` {fx_str:>7} `≈` {ys_str}")
+            fx = f"{r['fx_pct']:+.2f}%" if r['fx_pct'] is not None else "N/A "
+            lines.append(f"`{r['pair']:<8}  {fx:>7}  ≈  {r['yield_pct']:+.2f}%`")
+
     lines += ["\n━━━━━━━━━━━━━━━━━━━━━━",
-              f"Total: {len(results)} pair | Bukan rekomendasi investasi"]
+              f"Total: {len([r for r in results if r['status'] != 'N/A'])} pair | Bukan rekomendasi investasi"]
     return "\n".join(lines)
 
 def format_forex(rates):
@@ -170,13 +267,18 @@ def format_forex(rates):
     for pair, _, _ in FX_PAIRS:
         price = calc_price(pair, rates)
         if price:
-            lines.append(f"`{pair}` : {price}")
+            yday = FX_YESTERDAY.get(pair)
+            if yday:
+                chg = round(((price - yday) / yday) * 100, 2)
+                arrow = "📈" if chg > 0 else "📉" if chg < 0 else "➡️"
+                lines.append(f"`{pair:<8}` {price} {arrow} {chg:+.2f}%")
+            else:
+                lines.append(f"`{pair:<8}` {price}")
     return "\n".join(lines)
 
+# ── SIMPAN KE RAILWAY ────────────────────────────────────────────
 def save_to_railway():
-    """Simpan yield ke Railway Variables."""
     if not RAILWAY_TOKEN or not RAILWAY_SERVICE or not RAILWAY_ENV:
-        log.warning("Railway config tidak lengkap, skip save.")
         return
     try:
         vars_to_set = {f"YIELD_{k}": str(v) for k, v in YIELDS.items()}
@@ -193,13 +295,12 @@ def save_to_railway():
             headers={"Authorization": f"Bearer {RAILWAY_TOKEN}", "Content-Type": "application/json"},
             timeout=15
         )
-        if r.status_code == 200 and not r.json().get("errors"):
+        if r.status_code == 200:
             log.info("Yield tersimpan ke Railway.")
-        else:
-            log.warning(f"Railway: {r.text[:100]}")
     except Exception as e:
         log.error(f"save_to_railway: {e}")
 
+# ── TELEGRAM ─────────────────────────────────────────────────────
 def send_message(text, chat_id=CHAT_ID, thread_id=THREAD_ID):
     try:
         requests.post(f"https://api.telegram.org/bot{TOKEN}/sendMessage", json={
@@ -217,22 +318,39 @@ def get_updates(offset=0):
     except:
         return []
 
-def run_yield(chat_id=CHAT_ID, thread_id=THREAD_ID):
+def run_yield_a(chat_id=CHAT_ID, thread_id=THREAD_ID):
+    """Metode A: FX Daily Change% vs Yield Spread%"""
+    send_message("Mengambil data FX...", chat_id, thread_id)
+    try:
+        if not FX_YESTERDAY:
+            fetch_yesterday_prices()
+        rates = get_fx_rates()
+        if not rates:
+            send_message("Gagal ambil data FX.", chat_id, thread_id)
+            return
+        results = calculate_method_a(rates)
+        send_message(format_results(results, method="A"), chat_id, thread_id)
+    except Exception as e:
+        send_message(f"Error: {e}", chat_id, thread_id)
+
+def run_yield_b(chat_id=CHAT_ID, thread_id=THREAD_ID):
+    """Metode B: Fair Value vs Yield Spread%"""
     send_message("Mengambil data FX...", chat_id, thread_id)
     try:
         rates = get_fx_rates()
         if not rates:
-            send_message("Gagal ambil data FX. Coba lagi.", chat_id, thread_id)
+            send_message("Gagal ambil data FX.", chat_id, thread_id)
             return
-        results = calculate(rates)
-        send_message(format_valuation(results), chat_id, thread_id)
+        results = calculate_method_b(rates)
+        send_message(format_results(results, method="B"), chat_id, thread_id)
     except Exception as e:
-        log.error(f"run_yield: {e}")
         send_message(f"Error: {e}", chat_id, thread_id)
 
 def run_forex(chat_id=CHAT_ID, thread_id=THREAD_ID):
     send_message("Mengambil harga FX...", chat_id, thread_id)
     try:
+        if not FX_YESTERDAY:
+            fetch_yesterday_prices()
         rates = get_fx_rates()
         if not rates:
             send_message("Gagal ambil data FX.", chat_id, thread_id)
@@ -273,17 +391,22 @@ def handle_updateyield(text, chat_id, thread_id):
             "`/updateyield US:4.00 GB:4.48 CA:2.96 NZ:3.73 JP:1.40 CH:0.14 CN:1.27 IN:8.10`",
             chat_id, thread_id)
 
+# ── SCHEDULER ────────────────────────────────────────────────────
 def start_scheduler():
     send_time = f"{HOUR:02d}:{MINUTE:02d}"
-    schedule.every().day.at(send_time).do(run_yield)
-    log.info(f"Scheduler: {send_time} UTC")
+    schedule.every().day.at(send_time).do(lambda: run_yield_b())
+    # Fetch harga kemarin setiap hari jam 00:05 UTC
+    schedule.every().day.at("00:05").do(fetch_yesterday_prices)
+    log.info(f"Scheduler: kirim {send_time} UTC")
     while True:
         schedule.run_pending()
         time.sleep(30)
 
+# ── POLLING ───────────────────────────────────────────────────────
 def polling_loop():
     log.info("Bot berjalan...")
-    log.info(f"Yield: {YIELDS}")
+    # Fetch harga kemarin saat startup
+    threading.Thread(target=fetch_yesterday_prices, daemon=True).start()
     offset = 0
     while True:
         updates = get_updates(offset)
@@ -300,16 +423,20 @@ def polling_loop():
                 send_message(
                     "*ValuasiFX Bot*\n\n"
                     "*Command:*\n"
-                    "/yield — Valuasi 32 pair FX\n"
-                    "/forex — Harga 32 pair FX saat ini\n"
+                    "/yield — Valuasi metode B (Fair Value)\n"
+                    "/yieldA — Valuasi metode A (FX Daily%)\n"
+                    "/forex — Harga 32 pair + daily change\n"
                     "/yields — Yield 2Y saat ini\n"
                     "/updateyield — Update yield manual\n"
                     "/help — Bantuan\n\n"
                     "⏰ Auto-kirim 08:00 WIB",
                     chat_id, THREAD_ID)
 
+            elif text.startswith("/yieldA") or text.startswith("/yielda"):
+                threading.Thread(target=run_yield_a, args=(chat_id, THREAD_ID), daemon=True).start()
+
             elif text.startswith("/yield") and not text.startswith("/yields") and not text.startswith("/updateyield"):
-                threading.Thread(target=run_yield, args=(chat_id, THREAD_ID), daemon=True).start()
+                threading.Thread(target=run_yield_b, args=(chat_id, THREAD_ID), daemon=True).start()
 
             elif text.startswith("/forex"):
                 threading.Thread(target=run_forex, args=(chat_id, THREAD_ID), daemon=True).start()
@@ -326,12 +453,14 @@ def polling_loop():
             elif text.startswith("/help"):
                 send_message(
                     "*Cara Kerja Bot*\n\n"
-                    "*Formula:*\n"
-                    "Spread = Yield Base - Yield Quote\n"
-                    "Fair Value = Harga FX / (1 + Spread%)\n"
-                    "Diff% = (Harga - Fair) / Fair x 100\n\n"
-                    "*Update yield (seminggu sekali):*\n"
-                    "`/updateyield US:4.00 GB:4.48 CA:2.96`\n\n"
+                    "*Metode B (/yield):*\n"
+                    "Fair Value = Harga / (1 + Yield Spread%)\n"
+                    "Diff% = (Harga - Fair) / Fair × 100\n\n"
+                    "*Metode A (/yieldA):*\n"
+                    "FX Daily% = (Hari ini - Kemarin) / Kemarin × 100\n"
+                    "Bandingkan dengan Yield Spread%\n\n"
+                    "*Update yield:*\n"
+                    "`/updateyield US:4.00 GB:4.48`\n\n"
                     "⚠️ Bukan rekomendasi trading.",
                     chat_id, THREAD_ID)
         time.sleep(2)
