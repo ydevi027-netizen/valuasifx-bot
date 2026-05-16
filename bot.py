@@ -136,21 +136,30 @@ def format_valuation(results):
     lines = [
         "*YIELD SPREAD FX VALUATION*",
         f"_{now}_",
-        f"_Yield update: {UPDATED_AT}_",
+        f"_Yield: {UPDATED_AT}_",
         "━━━━━━━━━━━━━━━━━━━━━━",
     ]
     if over:
-        lines.append("\n*OVERVALUED*")
+        lines.append("\n*🔴 OVERVALUED* — FX > YIELD")
+        lines.append("`Pair      FX%     > Yield%`")
         for r in over:
-            lines.append(f"`{r['pair']}` : Overvalued ({r['diff']:+.2f}%) | Yield {r['spread']:+.2f}%")
+            fx_str = f"{r['diff']:+.2f}%"
+            ys_str = f"{r['spread']:+.2f}%"
+            lines.append(f"`{r['pair']:<8}` {fx_str:>7} `>` {ys_str}")
     if under:
-        lines.append("\n*UNDERVALUED*")
+        lines.append("\n*🟢 UNDERVALUED* — FX < YIELD")
+        lines.append("`Pair      FX%     < Yield%`")
         for r in under:
-            lines.append(f"`{r['pair']}` : Undervalued ({r['diff']:+.2f}%) | Yield {r['spread']:+.2f}%")
+            fx_str = f"{r['diff']:+.2f}%"
+            ys_str = f"{r['spread']:+.2f}%"
+            lines.append(f"`{r['pair']:<8}` {fx_str:>7} `<` {ys_str}")
     if fair:
-        lines.append("\n*FAIR VALUE*")
+        lines.append("\n*⚪ FAIR VALUE* — FX ≈ YIELD")
+        lines.append("`Pair      FX%     ≈ Yield%`")
         for r in fair:
-            lines.append(f"`{r['pair']}` : Fair Value ({r['diff']:+.2f}%) | Yield {r['spread']:+.2f}%")
+            fx_str = f"{r['diff']:+.2f}%"
+            ys_str = f"{r['spread']:+.2f}%"
+            lines.append(f"`{r['pair']:<8}` {fx_str:>7} `≈` {ys_str}")
     lines += ["\n━━━━━━━━━━━━━━━━━━━━━━",
               f"Total: {len(results)} pair | Bukan rekomendasi investasi"]
     return "\n".join(lines)
