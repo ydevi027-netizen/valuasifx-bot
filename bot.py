@@ -122,19 +122,55 @@ def calc_price(pair, rates):
 
 # ── FETCH HARGA KEMARIN ──────────────────────────────────────────
 def fetch_yesterday_prices():
-    """Ambil harga FX kemarin dan simpan ke memori."""
+    """Ambil harga FX kemarin dari beberapa sumber."""
     global FX_YESTERDAY
-    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-    log.info(f"Fetching harga kemarin {yesterday}...")
-    rates_yday = get_fx_rates(date_str=yesterday)
-    if rates_yday:
-        for pair, _, _ in FX_PAIRS:
-            price = calc_price(pair, rates_yday)
-            if price:
-                FX_YESTERDAY[pair] = price
-        log.info(f"Harga kemarin tersimpan: {len(FX_YESTERDAY)} pair")
-    else:
-        log.warning("Gagal fetch harga kemarin")
+    # Coba 1-3 hari ke belakang (skip weekend)
+    for days_back in [1, 2, 3]:
+        date = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
+        log.info(f"Fetching harga {date}...")
+
+        rates_yday = {}
+
+        # Sumber 1: frankfurter.app (ECB data, gratis tanpa API key)
+        try:
+            r = requests.get(
+                f"https://api.frankfurter.app/{date}",
+                params={"from": "USD", "to": "EUR,GBP,AUD,NZD,JPY,CAD,CHF,CNY,INR"},
+                timeout=12)
+            if r.status_code == 200:
+                data = r.json()
+                if data.get("rates"):
+                    rates_yday = data["rates"]
+                    rates_yday["USD"] = 1.0
+                    log.info(f"Harga {date} dari frankfurter.app OK")
+        except Exception as e:
+            log.debug(f"frankfurter: {e}")
+
+        # Sumber 2: fxratesapi historical
+        if not rates_yday:
+            try:
+                r2 = requests.get(
+                    f"https://api.fxratesapi.com/{date}",
+                    params={"base": "USD", "currencies": "EUR,GBP,AUD,NZD,JPY,CAD,CHF,CNY,INR"},
+                    timeout=12)
+                if r2.status_code == 200:
+                    data2 = r2.json()
+                    if data2.get("rates"):
+                        rates_yday = data2["rates"]
+                        rates_yday["USD"] = 1.0
+                        log.info(f"Harga {date} dari fxratesapi OK")
+            except Exception as e:
+                log.debug(f"fxratesapi hist: {e}")
+
+        if rates_yday:
+            for pair, _, _ in FX_PAIRS:
+                price = calc_price(pair, rates_yday)
+                if price:
+                    FX_YESTERDAY[pair] = price
+            log.info(f"Harga kemarin tersimpan: {len(FX_YESTERDAY)} pair dari {date}")
+            return
+
+    log.warning("Semua sumber historical gagal")
 
 # ── KALKULASI METODE A: FX Daily Change% vs Yield Spread% ────────
 def calculate_method_a(rates_today):
