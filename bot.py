@@ -430,7 +430,7 @@ def handle_updateyield(text, chat_id, thread_id):
 # ── SCHEDULER ────────────────────────────────────────────────────
 def start_scheduler():
     send_time = f"{HOUR:02d}:{MINUTE:02d}"
-    schedule.every().day.at(send_time).do(lambda: run_yield_b())
+    schedule.every().day.at(send_time).do(lambda: run_yield_a())
     # Fetch harga kemarin setiap hari jam 00:05 UTC
     schedule.every().day.at("00:05").do(fetch_yesterday_prices)
     log.info(f"Scheduler: kirim {send_time} UTC")
@@ -459,8 +459,7 @@ def polling_loop():
                 send_message(
                     "*ValuasiFX Bot*\n\n"
                     "*Command:*\n"
-                    "/yield — Valuasi metode B (Fair Value)\n"
-                    "/yieldA — Valuasi metode A (FX Daily%)\n"
+                    "/yield — Valuasi FX Daily% vs Yield Spread%\n"
                     "/forex — Harga 32 pair + daily change\n"
                     "/yields — Yield 2Y saat ini\n"
                     "/updateyield — Update yield manual\n"
@@ -468,11 +467,8 @@ def polling_loop():
                     "⏰ Auto-kirim 08:00 WIB",
                     chat_id, THREAD_ID)
 
-            elif text.startswith("/yieldA") or text.startswith("/yielda"):
-                threading.Thread(target=run_yield_a, args=(chat_id, THREAD_ID), daemon=True).start()
-
             elif text.startswith("/yield") and not text.startswith("/yields") and not text.startswith("/updateyield"):
-                threading.Thread(target=run_yield_b, args=(chat_id, THREAD_ID), daemon=True).start()
+                threading.Thread(target=run_yield_a, args=(chat_id, THREAD_ID), daemon=True).start()
 
             elif text.startswith("/forex"):
                 threading.Thread(target=run_forex, args=(chat_id, THREAD_ID), daemon=True).start()
@@ -489,14 +485,13 @@ def polling_loop():
             elif text.startswith("/help"):
                 send_message(
                     "*Cara Kerja Bot*\n\n"
-                    "*Metode B (/yield):*\n"
-                    "Fair Value = Harga / (1 + Yield Spread%)\n"
-                    "Diff% = (Harga - Fair) / Fair × 100\n\n"
-                    "*Metode A (/yieldA):*\n"
+                    "*Formula (/yield):*\n"
                     "FX Daily% = (Hari ini - Kemarin) / Kemarin × 100\n"
-                    "Bandingkan dengan Yield Spread%\n\n"
-                    "*Update yield:*\n"
-                    "`/updateyield US:4.00 GB:4.48`\n\n"
+                    "Yield% = Yield Base - Yield Quote\n"
+                    "FX% > Yield% → OVERVALUED\n"
+                    "FX% < Yield% → UNDERVALUED\n\n"
+                    "*Update yield (seminggu sekali):*\n"
+                    "`/updateyield US:4.00 GB:4.48 CA:2.96`\n\n"
                     "⚠️ Bukan rekomendasi trading.",
                     chat_id, THREAD_ID)
         time.sleep(2)
